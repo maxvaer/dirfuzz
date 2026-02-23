@@ -103,9 +103,12 @@ func Run(ctx context.Context, opts *config.Options) error {
 			continue
 		}
 
+		progress.ClearLine()
 		if err := out.WriteResult(&result); err != nil {
+			progress.Redraw()
 			return err
 		}
+		progress.Redraw()
 
 		// Collect directories for recursive scanning.
 		if opts.Recursive && looksLikeDirectory(result) {
@@ -188,9 +191,12 @@ func runRecursive(
 				continue
 			}
 
+			progress.ClearLine()
 			if err := out.WriteResult(&result); err != nil {
+				progress.Redraw()
 				return err
 			}
+			progress.Redraw()
 
 			if looksLikeDirectory(result) {
 				nextDirs = append(nextDirs, result.Path)

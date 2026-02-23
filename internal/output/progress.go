@@ -3,6 +3,7 @@ package output
 import (
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -16,6 +17,8 @@ type Progress struct {
 	start     time.Time
 	done      chan struct{}
 	quiet     bool
+	mu        sync.Mutex
+	visible   bool // whether the progress line is currently drawn
 }
 
 // NewProgress creates a progress tracker. Call Start() to begin display updates.
@@ -39,14 +42,41 @@ func (p *Progress) Start() {
 		for {
 			select {
 			case <-ticker.C:
-				p.print()
+				p.mu.Lock()
+				p.draw()
+				p.mu.Unlock()
 			case <-p.done:
-				p.print()
+				p.mu.Lock()
+				p.draw()
 				fmt.Fprint(os.Stderr, "\n")
+				p.visible = false
+				p.mu.Unlock()
 				return
 			}
 		}
 	}()
+}
+
+// ClearLine temporarily removes the progress bar from the terminal so that
+// a result line can be printed cleanly. Call Redraw() after printing.
+func (p *Progress) ClearLine() {
+	if p.quiet {
+		return
+	}
+	p.mu.Lock()
+	if p.visible {
+		fmt.Fprint(os.Stderr, "\r\033[K")
+		p.visible = false
+	}
+}
+
+// Redraw redraws the progress bar after a ClearLine+print cycle.
+func (p *Progress) Redraw() {
+	if p.quiet {
+		return
+	}
+	p.draw()
+	p.mu.Unlock()
 }
 
 // Increment records a completed request.
@@ -69,7 +99,7 @@ func (p *Progress) Stop() {
 	close(p.done)
 }
 
-func (p *Progress) print() {
+func (p *Progress) draw() {
 	completed := p.completed.Load()
 	elapsed := time.Since(p.start).Seconds()
 	rate := float64(0)
@@ -91,4 +121,5 @@ func (p *Progress) print() {
 	fmt.Fprintf(os.Stderr, "\r\033[K[%3.0f%%] %d/%d | %.0f req/s | Filtered: %d | Errors: %d | %s",
 		pct, completed, p.total, rate,
 		p.filtered.Load(), p.errors.Load(), eta)
+	p.visible = true
 }

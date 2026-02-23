@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maxvaer/dirfuzz/internal/config"
+	"github.com/maxvaer/dirfuzz/internal/reqparse"
 	"github.com/maxvaer/dirfuzz/internal/runner"
 	"github.com/maxvaer/dirfuzz/pkg/version"
 	"github.com/spf13/cobra"
@@ -28,10 +29,46 @@ filtering of custom 404 pages (soft-404s) that return HTTP 200.`,
 	Example: `  dirfuzz -u https://example.com
   dirfuzz -u https://example.com -e php,html -t 50
   dirfuzz -u https://example.com -w custom.txt --smart-filter=false
-  dirfuzz -u https://example.com -x 403,500 -o results.json --format json`,
+  dirfuzz -u https://example.com -x 403,500 -o results.json --format json
+  dirfuzz --request-file burp.req -e php,html`,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
+		// Parse raw HTTP request file (e.g. Burp export) if provided.
+		if opts.RequestFile != "" {
+			parsed, err := reqparse.ParseFile(opts.RequestFile)
+			if err != nil {
+				return fmt.Errorf("parsing request file: %w", err)
+			}
+			// Use parsed URL if -u was not explicitly set.
+			if !cmd.Flags().Changed("url") {
+				opts.URL = parsed.URL
+			}
+			// Merge parsed headers (explicit -H flags take precedence).
+			if opts.Headers == nil {
+				opts.Headers = make(map[string]string)
+			}
+			for key, val := range parsed.Headers {
+				k := strings.ToLower(key)
+				// Skip hop-by-hop and encoding headers that don't make sense for fuzzing.
+				if k == "host" || k == "content-length" || k == "accept-encoding" {
+					continue
+				}
+				// Only set if not already overridden by -H flag.
+				if _, exists := opts.Headers[key]; !exists {
+					opts.Headers[key] = val
+				}
+			}
+			// Use parsed User-Agent if --user-agent was not explicitly set.
+			if !cmd.Flags().Changed("user-agent") {
+				if ua, ok := parsed.Headers["User-Agent"]; ok {
+					opts.UserAgent = ua
+				}
+			}
+			if !opts.Quiet {
+				fmt.Fprintf(os.Stderr, "[+] Loaded request from %s -> %s\n", opts.RequestFile, opts.URL)
+			}
+		}
 		if opts.URL == "" {
-			return fmt.Errorf("target URL is required (-u)")
+			return fmt.Errorf("target URL is required (-u or --request-file)")
 		}
 		if !strings.HasPrefix(opts.URL, "http://") && !strings.HasPrefix(opts.URL, "https://") {
 			opts.URL = "http://" + opts.URL
@@ -80,10 +117,11 @@ func init() {
 	f.BoolVar(&opts.NoColor, "no-color", false, "Disable colored output")
 
 	// Recursion
-	f.BoolVarP(&opts.Recursive, "recursive", "r", false, "Enable recursive scanning")
+	f.BoolVar(&opts.Recursive, "recursive", false, "Enable recursive scanning")
 	f.IntVarP(&opts.MaxDepth, "max-depth", "R", 3, "Maximum recursion depth")
 
 	// HTTP
+	f.StringVarP(&opts.RequestFile, "request-file", "r", "", "Raw HTTP request file (e.g. Burp Suite export)")
 	f.StringSliceVarP(new([]string), "header", "H", nil, "Custom headers (Key: Value)")
 	f.StringVar(&opts.UserAgent, "user-agent", "", "Custom User-Agent string")
 	f.StringVar(&opts.Proxy, "proxy", "", "HTTP/SOCKS proxy URL")

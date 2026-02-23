@@ -2,3 +2,4 @@ dirfuzz
 dirfuzz.exe
 *.exe
 dist/
+ideas.md

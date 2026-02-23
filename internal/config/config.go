@@ -35,6 +35,7 @@ type Options struct {
 	MaxDepth  int
 
 	// HTTP
+	RequestFile     string // path to raw HTTP request file (e.g. Burp export)
 	Headers         map[string]string
 	UserAgent       string
 	Proxy           string
