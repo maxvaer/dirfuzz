@@ -3,3 +3,4 @@ dirfuzz.exe
 *.exe
 dist/
 ideas.md
+.claude/
