@@ -18,8 +18,15 @@ dirfuzz discovers hidden files and directories on web servers by brute-forcing p
 - **Built-in Wordlist** — Ships with a 9,680-entry default wordlist (same as dirsearch). No external files required.
 - **Fast** — Concurrent scanning with configurable thread count (default: 25).
 - **Recursive Scanning** — Automatically discovers directories and scans deeper.
+- **HTTP Method Fuzzing** — Try multiple HTTP methods (GET, POST, PUT, etc.) per path to find hidden endpoints.
+- **Virtual Host Fuzzing** — Fuzz the Host header to discover virtual hosts on a target.
+- **Crawl Discovery** — Automatically parses HTML responses for links and scans discovered paths (enabled by default).
+- **Multiple Targets** — Scan from a URL list (`-l`), CIDR range (`--cidr`), or Burp request file (`-r`).
+- **Result Hooks** — Execute shell commands for each result with JSON on stdin and placeholder expansion.
+- **Resume Support** — Save and resume interrupted scans with `--resume-file`.
+- **Adaptive Throttling** — Automatically backs off on 429/rate-limit responses.
 - **Multiple Output Formats** — Text (colored), JSON, CSV.
-- **Flexible Filtering** — Filter by status code, response size, or let the smart filter handle it.
+- **Flexible Filtering** — Filter by status code, response size, body content, or let the smart filter handle it.
 - **Single Binary** — No dependencies. Download and run.
 
 ## Installation
@@ -61,6 +68,33 @@ dirfuzz -u https://target.com -r -R 2
 
 # Through a proxy with custom headers
 dirfuzz -u https://target.com --proxy http://127.0.0.1:8080 -H "Authorization: Bearer token"
+
+# Try multiple HTTP methods per path
+dirfuzz -u https://target.com --methods GET,POST,PUT,DELETE
+
+# Virtual host fuzzing
+dirfuzz -u https://target.com --vhost --vhost-wordlist hostnames.txt
+
+# Scan a CIDR range on specific ports
+dirfuzz --cidr 192.168.1.0/24 --ports 80,443,8080
+
+# Scan multiple URLs from a file
+dirfuzz -l urls.txt -w wordlist.txt
+
+# From a Burp Suite request export
+dirfuzz -r burp_request.txt -e php,html
+
+# Run a hook command for each result
+dirfuzz -u https://target.com --on-result "notify-send 'Found {url} ({status})'"
+
+# Resume an interrupted scan
+dirfuzz -u https://target.com --resume-file scan.state
+
+# Only show responses containing a specific string
+dirfuzz -u https://target.com --match-body "admin"
+
+# Disable crawl (enabled by default)
+dirfuzz -u https://target.com --crawl=false
 ```
 
 ## How Smart Filter Works
@@ -82,47 +116,74 @@ dirfuzz solves this in two phases:
 
 The smart filter auto-disables itself if calibration fails (e.g. rate-limited), so scanning always continues.
 
+For virtual host fuzzing (`--vhost`), calibration sends requests with random subdomain Host headers instead of random paths, building a baseline for the default vhost response.
+
 ## All Options
 
 ```
 Target:
-  -u, --url string             Target URL (required)
-  -w, --wordlist string        Custom wordlist path (default: built-in)
-  -e, --extensions strings     File extensions to test (e.g. php,html,js)
-  -f, --force-extensions       Append extensions to every wordlist entry
+  -u, --url string               Target URL
+  -l, --urls-file string         File with one URL per line
+      --cidr string              CIDR range to scan (e.g. 192.168.1.0/24)
+      --ports string             Ports for CIDR targets (comma-separated)
+  -r, --request-file string      Raw HTTP request file (e.g. Burp Suite export)
+  -w, --wordlist string          Custom wordlist path (default: built-in)
+  -e, --extensions strings       File extensions to test (e.g. php,html,js)
+  -f, --force-extensions         Append extensions to every wordlist entry
 
 Performance:
-  -t, --threads int            Number of concurrent threads (default 25)
-      --timeout duration       HTTP request timeout (default 10s)
-      --delay duration         Delay between requests per thread
+  -t, --threads int              Number of concurrent threads (default 25)
+      --timeout duration         HTTP request timeout (default 10s)
+      --delay duration           Delay between requests per thread
+      --adaptive-throttle        Auto back-off on 429/rate limits
 
 Smart Filter:
-      --smart-filter           Enable smart 404 detection (default true)
-      --smart-filter-threshold Size tolerance in bytes (default 50)
+      --smart-filter             Enable smart 404 detection (default true)
+      --smart-filter-threshold   Size tolerance in bytes (default 50)
+      --smart-filter-per-dir     Re-calibrate smart filter per subdirectory
 
 Filtering:
-  -i, --include-status ints    Only show these status codes (comma-separated)
-  -x, --exclude-status ints    Hide these status codes (comma-separated)
-      --exclude-size ints      Hide responses of these sizes (comma-separated)
+  -i, --include-status ints      Only show these status codes (comma-separated)
+  -x, --exclude-status ints      Hide these status codes (comma-separated)
+      --exclude-size ints        Hide responses of these sizes (comma-separated)
+      --match-body string        Only show responses containing this string
+      --exclude-body string      Hide responses containing this string
 
 Output:
-  -o, --output string          Output file path
-      --format string          Output format: text, json, csv (default "text")
-  -q, --quiet                  Minimal output
-      --no-color               Disable colored output
+  -o, --output string            Output file path
+      --format string            Output format: text, json, csv (default "text")
+  -q, --quiet                    Minimal output
+      --no-color                 Disable colored output
 
 Recursion:
-  -r, --recursive              Enable recursive scanning
-  -R, --max-depth int          Maximum recursion depth (default 3)
+      --recursive                Enable recursive scanning
+  -R, --max-depth int            Maximum recursion depth (default 3)
 
 HTTP:
-  -H, --header strings         Custom headers (Key: Value), repeatable
-      --user-agent string      Custom User-Agent string
-      --proxy string           HTTP/SOCKS proxy URL
-      --follow-redirects       Follow HTTP redirects
+  -H, --header strings           Custom headers (Key: Value), repeatable
+      --user-agent string        Custom User-Agent string
+      --proxy string             HTTP/SOCKS proxy URL
+      --follow-redirects         Follow HTTP redirects
+      --methods strings          HTTP methods to try per path (e.g. GET,POST,PUT)
+
+Virtual Host Fuzzing:
+      --vhost                    Enable virtual host fuzzing mode
+      --vhost-wordlist string    Wordlist of hostnames for vhost fuzzing
+
+Crawl:
+      --crawl                    Crawl discovered pages for additional paths (default true)
+      --crawl-depth int          Maximum crawl depth (default 2)
+
+Hooks:
+      --on-result string         Shell command for each result (receives JSON on stdin)
+
+Resume:
+      --resume-file string       File to save/load scan progress for resume
 ```
 
-## Output Example
+## Output Examples
+
+### Default text output
 
 ```
  200      1532  https://target.com/admin
@@ -135,6 +196,44 @@ Completed: 9680 requests | Filtered: 847 | Errors: 3 | Duration: 38.2s | 253.4 r
 ```
 
 Status codes are color-coded in the terminal: green (2xx), cyan (3xx), yellow (4xx), red (5xx).
+
+### Method fuzzing output
+
+```
+[POST] 200      0  https://target.com/api/users
+[PUT]  200      0  https://target.com/api/config
+```
+
+### Virtual host fuzzing output
+
+```
+[dev.target.com] 200     4521  https://target.com/
+[staging.target.com] 200  8732  https://target.com/
+```
+
+## Hook System
+
+The `--on-result` flag runs a shell command for each non-filtered result. The command receives a JSON payload on stdin and supports placeholder expansion:
+
+| Placeholder | Value |
+|-------------|-------|
+| `{url}` | Full URL |
+| `{path}` | Path component |
+| `{status}` | HTTP status code |
+| `{size}` | Response size in bytes |
+| `{method}` | HTTP method |
+| `{host}` | Host header (vhost mode) |
+
+```bash
+# Desktop notification
+dirfuzz -u https://target.com --on-result "notify-send 'Found {url}'"
+
+# Log to file
+dirfuzz -u https://target.com --on-result "echo '{method} {status} {url}' >> hits.log"
+
+# Pipe JSON to jq
+dirfuzz -u https://target.com --on-result "jq -r '.url' >> urls.txt"
+```
 
 ## License
 

@@ -94,6 +94,13 @@ func (p *Progress) IncrementErrors() {
 	p.errors.Add(1)
 }
 
+// AddTotal increases the total request count (e.g. when crawl discovers new paths).
+func (p *Progress) AddTotal(n int) {
+	p.mu.Lock()
+	p.total += n
+	p.mu.Unlock()
+}
+
 // Stop ends the progress display.
 func (p *Progress) Stop() {
 	close(p.done)

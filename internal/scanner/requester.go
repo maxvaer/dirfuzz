@@ -90,11 +90,15 @@ func NewRequester(opts *config.Options) (*Requester, error) {
 	}, nil
 }
 
-// Do sends a GET request for the given path and returns the parsed response.
-func (r *Requester) Do(ctx context.Context, path string) (*Response, error) {
+// Do sends an HTTP request for the given path and returns the parsed response.
+// method defaults to GET if empty. host overrides the Host header if non-empty.
+func (r *Requester) Do(ctx context.Context, method, path, host string) (*Response, error) {
+	if method == "" {
+		method = http.MethodGet
+	}
 	targetURL := r.baseURL.String() + "/" + strings.TrimLeft(path, "/")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +106,9 @@ func (r *Requester) Do(ctx context.Context, path string) (*Response, error) {
 	req.Header.Set("User-Agent", r.userAgent)
 	for k, v := range r.headers {
 		req.Header.Set(k, v)
+	}
+	if host != "" {
+		req.Host = host
 	}
 
 	start := time.Now()

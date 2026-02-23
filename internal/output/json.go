@@ -9,6 +9,8 @@ import (
 )
 
 type jsonEntry struct {
+	Method        string `json:"method"`
+	Host          string `json:"host,omitempty"`
 	URL           string `json:"url"`
 	Path          string `json:"path"`
 	StatusCode    int    `json:"status"`
@@ -42,6 +44,8 @@ func (j *JSONWriter) WriteHeader() error { return nil }
 
 func (j *JSONWriter) WriteResult(result *scanner.ScanResult) error {
 	j.entries = append(j.entries, jsonEntry{
+		Method:        result.Method,
+		Host:          result.Host,
 		URL:           result.URL,
 		Path:          result.Path,
 		StatusCode:    result.StatusCode,

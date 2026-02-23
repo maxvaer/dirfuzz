@@ -31,11 +31,13 @@ func NewCSVWriter(outputFile string) (*CSVWriter, error) {
 }
 
 func (c *CSVWriter) WriteHeader() error {
-	return c.w.Write([]string{"url", "path", "status", "size", "redirect"})
+	return c.w.Write([]string{"method", "host", "url", "path", "status", "size", "redirect"})
 }
 
 func (c *CSVWriter) WriteResult(result *scanner.ScanResult) error {
 	return c.w.Write([]string{
+		result.Method,
+		result.Host,
 		result.URL,
 		result.Path,
 		fmt.Sprintf("%d", result.StatusCode),

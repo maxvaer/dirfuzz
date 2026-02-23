@@ -63,3 +63,26 @@ func Load(path string, extensions []string, forceExtensions bool) ([]string, err
 
 	return result, nil
 }
+
+// LoadSimple reads a wordlist file and returns de-duplicated entries.
+// No extension expansion or placeholder processing is performed.
+func LoadSimple(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading wordlist %s: %w", path, err)
+	}
+	lines := strings.Split(string(data), "\n")
+	seen := make(map[string]struct{}, len(lines))
+	var result []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if _, ok := seen[line]; !ok {
+			seen[line] = struct{}{}
+			result = append(result, line)
+		}
+	}
+	return result, nil
+}

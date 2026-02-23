@@ -54,9 +54,18 @@ func (t *TextWriter) WriteResult(result *scanner.ScanResult) error {
 		redirectInfo = fmt.Sprintf(" -> %s", result.RedirectURL)
 	}
 
-	_, err := fmt.Fprintf(t.w, "%s%3d%s  %8d  %s%s\n",
+	prefix := ""
+	if result.Method != "" && result.Method != "GET" {
+		prefix += fmt.Sprintf("[%s] ", result.Method)
+	}
+	if result.Host != "" {
+		prefix += fmt.Sprintf("[%s] ", result.Host)
+	}
+
+	_, err := fmt.Fprintf(t.w, "%s%3d%s  %8d  %s%s%s\n",
 		color, result.StatusCode, reset,
 		result.ContentLength,
+		prefix,
 		result.URL,
 		redirectInfo,
 	)

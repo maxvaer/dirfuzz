@@ -6,38 +6,46 @@ import (
 	"time"
 )
 
-// RunWorkerPool fans out path requests across workers and returns a channel
-// of results. The channel is closed when all paths have been processed.
+// WorkerConfig holds options for the worker pool.
+type WorkerConfig struct {
+	Threads   int
+	Throttler *Throttler
+	KeepBody  bool // retain response body in ScanResult for body filters
+}
+
+// RunWorkerPool fans out work items across workers and returns a channel
+// of results. The channel is closed when all items have been processed.
 func RunWorkerPool(
 	ctx context.Context,
 	req *Requester,
-	paths []string,
-	threads int,
-	delay time.Duration,
+	items []WorkItem,
+	cfg WorkerConfig,
 ) <-chan ScanResult {
-	pathsCh := make(chan string, threads*2)
+	threads := cfg.Threads
+	itemsCh := make(chan WorkItem, threads*2)
 	resultsCh := make(chan ScanResult, threads*2)
 
 	var wg sync.WaitGroup
 
-	// Producer: feed paths into channel.
+	// Producer: feed items into channel.
 	go func() {
-		defer close(pathsCh)
-		for _, p := range paths {
+		defer close(itemsCh)
+		for _, item := range items {
 			select {
-			case pathsCh <- p:
+			case itemsCh <- item:
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
-	// Workers: consume paths, produce results.
+	// Workers: consume items, produce results.
 	for i := 0; i < threads; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for path := range pathsCh {
+			for item := range itemsCh {
+				delay := cfg.Throttler.Delay()
 				if delay > 0 {
 					select {
 					case <-time.After(delay):
@@ -46,20 +54,27 @@ func RunWorkerPool(
 					}
 				}
 
-				resp, err := req.Do(ctx, path)
+				resp, err := req.Do(ctx, item.Method, item.Path, item.Host)
 				if err != nil {
 					if ctx.Err() != nil {
 						return
 					}
+					cfg.Throttler.RecordError()
 					resultsCh <- ScanResult{
-						Path:  path,
-						Error: err,
+						Method: item.Method,
+						Host:   item.Host,
+						Path:   item.Path,
+						Error:  err,
 					}
 					continue
 				}
 
-				resultsCh <- ScanResult{
-					Path:          path,
+				cfg.Throttler.RecordStatus(resp.StatusCode)
+
+				result := ScanResult{
+					Method:        item.Method,
+					Host:          item.Host,
+					Path:          item.Path,
 					URL:           resp.URL,
 					StatusCode:    resp.StatusCode,
 					ContentLength: resp.ContentLength,
@@ -69,6 +84,11 @@ func RunWorkerPool(
 					RedirectURL:   resp.RedirectURL,
 					Duration:      resp.Duration,
 				}
+				if cfg.KeepBody {
+					result.Body = resp.Body
+				}
+
+				resultsCh <- result
 			}
 		}()
 	}

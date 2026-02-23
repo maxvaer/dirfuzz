@@ -40,19 +40,11 @@ type SmartFilter struct {
 func NewSmartFilter(ctx context.Context, req *scanner.Requester, targetURL string, threshold int) (*SmartFilter, error) {
 	probes := generateProbes(5)
 
-	type probeResult struct {
-		statusCode    int
-		contentLength int64
-		bodyHash      [16]byte
-		wordCount     int
-		lineCount     int
-	}
-
 	var results []probeResult
 	for _, probe := range probes {
-		resp, err := req.Do(ctx, probe)
+		resp, err := req.Do(ctx, "GET", probe, "")
 		if err != nil {
-			continue // tolerate individual probe failures
+			continue
 		}
 		results = append(results, probeResult{
 			statusCode:    resp.StatusCode,
@@ -63,11 +55,45 @@ func NewSmartFilter(ctx context.Context, req *scanner.Requester, targetURL strin
 		})
 	}
 
-	if len(results) < 2 {
-		return nil, fmt.Errorf("only %d/%d calibration probes succeeded, need at least 2", len(results), len(probes))
+	return buildSmartFilter(results, len(probes), threshold)
+}
+
+// NewSmartFilterVHost performs calibration for virtual host fuzzing by
+// sending requests with random subdomain Host headers.
+func NewSmartFilterVHost(ctx context.Context, req *scanner.Requester, targetURL string, threshold int) (*SmartFilter, error) {
+	probeHosts := generateVHostProbes(5)
+
+	var results []probeResult
+	for _, host := range probeHosts {
+		resp, err := req.Do(ctx, "GET", "/", host)
+		if err != nil {
+			continue
+		}
+		results = append(results, probeResult{
+			statusCode:    resp.StatusCode,
+			contentLength: resp.ContentLength,
+			bodyHash:      resp.BodyHash,
+			wordCount:     resp.WordCount,
+			lineCount:     resp.LineCount,
+		})
 	}
 
-	// Group results by status code.
+	return buildSmartFilter(results, len(probeHosts), threshold)
+}
+
+type probeResult struct {
+	statusCode    int
+	contentLength int64
+	bodyHash      [16]byte
+	wordCount     int
+	lineCount     int
+}
+
+func buildSmartFilter(results []probeResult, probeCount, threshold int) (*SmartFilter, error) {
+	if len(results) < 2 {
+		return nil, fmt.Errorf("only %d/%d calibration probes succeeded, need at least 2", len(results), probeCount)
+	}
+
 	groups := make(map[int][]probeResult)
 	for _, r := range results {
 		groups[r.statusCode] = append(groups[r.statusCode], r)
@@ -77,10 +103,9 @@ func NewSmartFilter(ctx context.Context, req *scanner.Requester, targetURL strin
 
 	for code, group := range groups {
 		if len(group) < 2 {
-			continue // need at least 2 samples to establish a baseline
+			continue
 		}
 
-		// Check if all hashes are identical.
 		allSameHash := true
 		for i := 1; i < len(group); i++ {
 			if group[i].bodyHash != group[0].bodyHash {
@@ -101,7 +126,6 @@ func NewSmartFilter(ctx context.Context, req *scanner.Requester, targetURL strin
 			continue
 		}
 
-		// Check if content lengths converge (all within threshold of median).
 		lengths := make([]int64, len(group))
 		words := make([]int, len(group))
 		lines := make([]int, len(group))
@@ -132,8 +156,6 @@ func NewSmartFilter(ctx context.Context, req *scanner.Requester, targetURL strin
 				mode:          matchFuzzyLength,
 			})
 		}
-		// If lengths don't converge either, skip this status code —
-		// smart filter can't reliably detect soft-404s for it.
 	}
 
 	if len(sf.baselines) == 0 {
@@ -179,6 +201,17 @@ func generateProbes(n int) []string {
 		buf := make([]byte, 8)
 		_, _ = rand.Read(buf)
 		probes[i] = "dirfuzz_probe_" + hex.EncodeToString(buf)
+	}
+	return probes
+}
+
+// generateVHostProbes creates random subdomain strings for vhost calibration.
+func generateVHostProbes(n int) []string {
+	probes := make([]string, n)
+	for i := range probes {
+		buf := make([]byte, 6)
+		_, _ = rand.Read(buf)
+		probes[i] = "dirfuzz-" + hex.EncodeToString(buf) + ".probe.invalid"
 	}
 	return probes
 }
