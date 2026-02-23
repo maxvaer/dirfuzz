@@ -1,0 +1,4 @@
+dirfuzz
+dirfuzz.exe
+*.exe
+dist/
