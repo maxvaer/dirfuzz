@@ -68,4 +68,13 @@ type Options struct {
 
 	// Hooks
 	OnResultCmd string // command to run for each result (receives JSON on stdin)
+
+	// Skip
+	MaxETA time.Duration // skip target if ETA exceeds this duration (0 = disabled)
+
+	// Sort
+	SortBy string // sort results by: status, path, size (empty = no sorting)
+
+	// Tree
+	Tree bool // print directory tree summary after scan
 }

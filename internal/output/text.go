@@ -39,7 +39,19 @@ func NewTextWriter(outputFile string, noColor, quiet bool) (*TextWriter, error) 
 	return &TextWriter{w: w, noColor: noColor, quiet: quiet}, nil
 }
 
-func (t *TextWriter) WriteHeader() error { return nil }
+func (t *TextWriter) WriteHeader() error {
+	if t.quiet {
+		return nil
+	}
+	dim := "\033[2m"
+	reset := colorReset
+	if t.noColor {
+		dim = ""
+		reset = ""
+	}
+	_, err := fmt.Fprintf(t.w, "%sCode      Size  URL%s\n", dim, reset)
+	return err
+}
 
 func (t *TextWriter) WriteResult(result *scanner.ScanResult) error {
 	color := t.colorForStatus(result.StatusCode)

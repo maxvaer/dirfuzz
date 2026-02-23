@@ -90,12 +90,12 @@ filtering of custom 404 pages (soft-404s) that return HTTP 200.`,
 			return fmt.Errorf("--include-status and --exclude-status are mutually exclusive")
 		}
 		if opts.VHost {
-			if opts.VHostWordlist == "" {
-				return fmt.Errorf("--vhost requires --vhost-wordlist")
-			}
 			if opts.Recursive {
 				return fmt.Errorf("--vhost and --recursive are mutually exclusive")
 			}
+		}
+		if opts.SortBy != "" && opts.SortBy != "status" && opts.SortBy != "path" && opts.SortBy != "size" {
+			return fmt.Errorf("--sort must be one of: status, path, size")
 		}
 		return nil
 	},
@@ -170,7 +170,7 @@ func init() {
 
 	// Virtual host fuzzing
 	f.BoolVar(&opts.VHost, "vhost", false, "Enable virtual host fuzzing mode")
-	f.StringVar(&opts.VHostWordlist, "vhost-wordlist", "", "Wordlist of hostnames for vhost fuzzing")
+	f.StringVar(&opts.VHostWordlist, "vhost-wordlist", "", "Wordlist of hostnames for vhost fuzzing (default: built-in top-5000)")
 
 	// Crawl
 	f.BoolVar(&opts.Crawl, "crawl", true, "Crawl discovered pages for additional paths")
@@ -178,6 +178,15 @@ func init() {
 
 	// Hooks
 	f.StringVar(&opts.OnResultCmd, "on-result", "", "Shell command to run for each result (receives JSON on stdin)")
+
+	// Sort
+	f.StringVar(&opts.SortBy, "sort", "", "Sort results: status, path, size (buffers until scan completes)")
+
+	// Tree
+	f.BoolVar(&opts.Tree, "tree", false, "Print directory tree summary after scan")
+
+	// Skip
+	f.DurationVar(&opts.MaxETA, "max-eta", time.Hour, "Skip target if ETA exceeds this duration (0 to disable)")
 
 	// Update
 	f.BoolVar(&updateFlag, "update", false, "Update dirfuzz to the latest version")

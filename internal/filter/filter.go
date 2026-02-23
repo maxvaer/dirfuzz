@@ -23,6 +23,13 @@ func (c *Chain) Add(f Filter) {
 	c.filters = append(c.filters, f)
 }
 
+// Filters returns a copy of the internal filter slice.
+func (c *Chain) Filters() []Filter {
+	out := make([]Filter, len(c.filters))
+	copy(out, c.filters)
+	return out
+}
+
 // Apply runs every filter against the result. Returns true and the filter
 // name if the result should be filtered out.
 func (c *Chain) Apply(result *scanner.ScanResult) (bool, string) {

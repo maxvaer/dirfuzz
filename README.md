@@ -15,21 +15,27 @@ dirfuzz discovers hidden files and directories on web servers by brute-forcing p
 ## Features
 
 - **Smart 404 Detection** — Automatically calibrates against the target before scanning, then filters out soft-404 responses in real time. No manual `--exclude-size` guessing needed.
-- **Built-in Wordlist** — Ships with a 9,680-entry default wordlist (same as dirsearch). No external files required.
+- **Built-in Wordlists** — Ships with a 9,680-entry default path wordlist and a 5,000-entry vhost wordlist. No external files required.
 - **Fast** — Concurrent scanning with configurable thread count (default: 25).
-- **Recursive Scanning** — Automatically discovers directories and scans deeper.
+- **Recursive Scanning** — Automatically discovers directories and scans deeper. Directories inferred from crawled paths are also recursively scanned.
 - **HTTP Method Fuzzing** — Try multiple HTTP methods (GET, POST, PUT, etc.) per path to find hidden endpoints.
-- **Virtual Host Fuzzing** — Fuzz the Host header to discover virtual hosts on a target.
-- **Crawl Discovery** — Automatically parses HTML responses for links and scans discovered paths (enabled by default).
+- **Virtual Host Fuzzing** — Fuzz the Host header to discover virtual hosts on a target. Built-in top-5000 subdomain list included.
+- **Crawl Discovery** — Automatically parses HTML responses for links and scans discovered paths (enabled by default). Infers parent directories from crawled URLs for recursive scanning.
 - **Multiple Targets** — Scan from a URL list (`-l`), CIDR range (`--cidr`), or Burp request file (`-r`).
+- **ETA-based Skipping** — Automatically skips slow targets when ETA exceeds a threshold (default: 1 hour). Useful for multi-target scans.
 - **Result Hooks** — Execute shell commands for each result with JSON on stdin and placeholder expansion.
 - **Resume Support** — Save and resume interrupted scans with `--resume-file`.
 - **Adaptive Throttling** — Automatically backs off on 429/rate-limit responses.
-- **Multiple Output Formats** — Text (colored), JSON, CSV.
+- **Multiple Output Formats** — Text (colored, with column headings), JSON, CSV.
 - **Flexible Filtering** — Filter by status code, response size, body content, or let the smart filter handle it.
+- **Self-Update** — Update to the latest version with `dirfuzz --update`.
 - **Single Binary** — No dependencies. Download and run.
 
 ## Installation
+
+### Download
+
+Pre-built binaries for Linux, macOS, and Windows are available on the [Releases](https://github.com/maxvaer/dirfuzz/releases) page.
 
 ### From Source
 
@@ -43,6 +49,12 @@ go install github.com/maxvaer/dirfuzz@latest
 git clone https://github.com/maxvaer/dirfuzz.git
 cd dirfuzz
 go build -o dirfuzz .
+```
+
+### Update
+
+```bash
+dirfuzz --update
 ```
 
 ## Quick Start
@@ -64,7 +76,7 @@ dirfuzz -u https://target.com -w /path/to/wordlist.txt -o results.json --format 
 dirfuzz -u https://target.com --smart-filter=false
 
 # Recursive scan up to depth 2
-dirfuzz -u https://target.com -r -R 2
+dirfuzz -u https://target.com --recursive -R 2
 
 # Through a proxy with custom headers
 dirfuzz -u https://target.com --proxy http://127.0.0.1:8080 -H "Authorization: Bearer token"
@@ -72,8 +84,11 @@ dirfuzz -u https://target.com --proxy http://127.0.0.1:8080 -H "Authorization: B
 # Try multiple HTTP methods per path
 dirfuzz -u https://target.com --methods GET,POST,PUT,DELETE
 
-# Virtual host fuzzing
-dirfuzz -u https://target.com --vhost --vhost-wordlist hostnames.txt
+# Virtual host fuzzing (uses built-in top-5000 subdomain list)
+dirfuzz -u https://target.com --vhost
+
+# Virtual host fuzzing with a custom wordlist
+dirfuzz -u https://target.com --vhost --vhost-wordlist custom-hosts.txt
 
 # Scan a CIDR range on specific ports
 dirfuzz --cidr 192.168.1.0/24 --ports 80,443,8080
@@ -95,6 +110,12 @@ dirfuzz -u https://target.com --match-body "admin"
 
 # Disable crawl (enabled by default)
 dirfuzz -u https://target.com --crawl=false
+
+# Skip targets that would take more than 30 minutes
+dirfuzz -l urls.txt --max-eta 30m
+
+# Disable ETA-based skipping
+dirfuzz -u https://target.com --max-eta 0
 ```
 
 ## How Smart Filter Works
@@ -113,6 +134,7 @@ dirfuzz solves this in two phases:
   - **Exact hash match** — Body is byte-identical to the baseline (static 404 page)
   - **Fuzzy match** — Body size within threshold (default: 50 bytes) AND word count within 5% (dynamic 404 with timestamps/tokens)
   - **No match** — Response is genuinely different, shown as a real result
+- Empty-body 200 responses are automatically filtered as catch-all pages
 
 The smart filter auto-disables itself if calibration fails (e.g. rate-limited), so scanning always continues.
 
@@ -168,17 +190,23 @@ HTTP:
 
 Virtual Host Fuzzing:
       --vhost                    Enable virtual host fuzzing mode
-      --vhost-wordlist string    Wordlist of hostnames for vhost fuzzing
+      --vhost-wordlist string    Wordlist of hostnames (default: built-in top-5000)
 
 Crawl:
       --crawl                    Crawl discovered pages for additional paths (default true)
       --crawl-depth int          Maximum crawl depth (default 2)
+
+Skip:
+      --max-eta duration         Skip target if ETA exceeds this (default 1h, 0 to disable)
 
 Hooks:
       --on-result string         Shell command for each result (receives JSON on stdin)
 
 Resume:
       --resume-file string       File to save/load scan progress for resume
+
+Update:
+      --update                   Update dirfuzz to the latest version
 ```
 
 ## Output Examples
@@ -186,6 +214,7 @@ Resume:
 ### Default text output
 
 ```
+Code      Size  URL
  200      1532  https://target.com/admin
  301        0  https://target.com/images -> https://target.com/images/
  200      3847  https://target.com/.env
@@ -200,6 +229,7 @@ Status codes are color-coded in the terminal: green (2xx), cyan (3xx), yellow (4
 ### Method fuzzing output
 
 ```
+Code      Size  URL
 [POST] 200      0  https://target.com/api/users
 [PUT]  200      0  https://target.com/api/config
 ```
@@ -207,6 +237,7 @@ Status codes are color-coded in the terminal: green (2xx), cyan (3xx), yellow (4
 ### Virtual host fuzzing output
 
 ```
+Code      Size  URL
 [dev.target.com] 200     4521  https://target.com/
 [staging.target.com] 200  8732  https://target.com/
 ```
@@ -234,6 +265,15 @@ dirfuzz -u https://target.com --on-result "echo '{method} {status} {url}' >> hit
 # Pipe JSON to jq
 dirfuzz -u https://target.com --on-result "jq -r '.url' >> urls.txt"
 ```
+
+## Wordlist Credits
+
+dirfuzz ships with built-in wordlists so you can start scanning without downloading external files:
+
+- **Path wordlist** (`dicc.txt`, 9,680 entries) — From [dirsearch](https://github.com/maurosoria/dirsearch) by Mauro Soria. A curated list of common web paths, files, and directory names with `%EXT%` extension placeholders.
+- **VHost wordlist** (`vhosts.txt`, 5,000 entries) — `subdomains-top1million-5000.txt` from [SecLists](https://github.com/danielmiessler/SecLists) by Daniel Miessler, Jason Haddix, and community contributors. The top 5,000 most common subdomains ranked by real-world frequency.
+
+Both wordlists can be overridden with `-w` (paths) or `--vhost-wordlist` (vhosts).
 
 ## License
 

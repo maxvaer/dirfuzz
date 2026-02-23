@@ -168,6 +168,11 @@ func buildSmartFilter(results []probeResult, probeCount, threshold int) (*SmartF
 func (sf *SmartFilter) Name() string { return "smart-404" }
 
 func (sf *SmartFilter) ShouldFilter(result *scanner.ScanResult) bool {
+	// Empty body with 200 status is almost certainly a catch-all, not real content.
+	if result.StatusCode == 200 && result.ContentLength == 0 {
+		return true
+	}
+
 	for _, b := range sf.baselines {
 		if result.StatusCode != b.statusCode {
 			continue

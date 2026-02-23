@@ -3,6 +3,7 @@ package output
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,7 @@ type Progress struct {
 	completed atomic.Int64
 	filtered  atomic.Int64
 	errors    atomic.Int64
+	found     atomic.Int64
 	start     time.Time
 	done      chan struct{}
 	quiet     bool
@@ -84,6 +86,11 @@ func (p *Progress) Increment() {
 	p.completed.Add(1)
 }
 
+// Completed returns the number of completed requests.
+func (p *Progress) Completed() int64 {
+	return p.completed.Load()
+}
+
 // IncrementFiltered records a filtered result.
 func (p *Progress) IncrementFiltered() {
 	p.filtered.Add(1)
@@ -94,6 +101,11 @@ func (p *Progress) IncrementErrors() {
 	p.errors.Add(1)
 }
 
+// IncrementFound records a result that passed all filters.
+func (p *Progress) IncrementFound() {
+	p.found.Add(1)
+}
+
 // AddTotal increases the total request count (e.g. when crawl discovers new paths).
 func (p *Progress) AddTotal(n int) {
 	p.mu.Lock()
@@ -101,9 +113,50 @@ func (p *Progress) AddTotal(n int) {
 	p.mu.Unlock()
 }
 
+// ETA returns the estimated remaining time based on current progress rate.
+// Returns 0 if not enough data to estimate.
+func (p *Progress) ETA() time.Duration {
+	completed := p.completed.Load()
+	elapsed := time.Since(p.start).Seconds()
+	if elapsed <= 0 || completed <= 0 {
+		return 0
+	}
+	rate := float64(completed) / elapsed
+	p.mu.Lock()
+	total := p.total
+	p.mu.Unlock()
+	remaining := float64(int64(total)-completed) / rate
+	return time.Duration(remaining * float64(time.Second))
+}
+
 // Stop ends the progress display.
 func (p *Progress) Stop() {
 	close(p.done)
+}
+
+// buildBar creates a visual progress bar of the given width.
+func buildBar(pct float64, width int) string {
+	filled := int(pct / 100.0 * float64(width))
+	if filled > width {
+		filled = width
+	}
+	if filled < 0 {
+		filled = 0
+	}
+
+	var buf strings.Builder
+	buf.WriteByte('[')
+	for i := 0; i < width; i++ {
+		if i < filled {
+			buf.WriteByte('=')
+		} else if i == filled && pct < 100 {
+			buf.WriteByte('>')
+		} else {
+			buf.WriteByte(' ')
+		}
+	}
+	buf.WriteByte(']')
+	return buf.String()
 }
 
 func (p *Progress) draw() {
@@ -125,8 +178,10 @@ func (p *Progress) draw() {
 		eta = fmt.Sprintf("ETA: %s", time.Duration(remaining*float64(time.Second)).Round(time.Second))
 	}
 
-	fmt.Fprintf(os.Stderr, "\r\033[K[%3.0f%%] %d/%d | %.0f req/s | Filtered: %d | Errors: %d | %s",
-		pct, completed, p.total, rate,
-		p.filtered.Load(), p.errors.Load(), eta)
+	bar := buildBar(pct, 20)
+
+	fmt.Fprintf(os.Stderr, "\r\033[K%s %3.0f%% | %d/%d | %.0f req/s | Found: %d | Filtered: %d | Errors: %d | %s",
+		bar, pct, completed, p.total, rate,
+		p.found.Load(), p.filtered.Load(), p.errors.Load(), eta)
 	p.visible = true
 }

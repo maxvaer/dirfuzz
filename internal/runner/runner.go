@@ -236,7 +236,10 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 	progress.Start()
 	startTime := time.Now()
 
-	results := scanner.RunWorkerPool(ctx, req, items, workerCfg)
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+
+	results := scanner.RunWorkerPool(workerCtx, req, items, workerCfg)
 
 	var stats output.Stats
 	stats.TotalRequests = len(items)
@@ -248,8 +251,32 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 		scannedSet[item.Path] = struct{}{}
 	}
 
+	// ETA-based skip: check after a minimum number of requests for stable estimate.
+	etaCheckAfter := int64(100)
+	if n := int64(len(items)) / 20; n > etaCheckAfter {
+		etaCheckAfter = n // 5% of total, whichever is larger
+	}
+	etaSkipped := false
+
 	for result := range results {
 		progress.Increment()
+
+		// Check ETA threshold to skip slow targets.
+		if opts.MaxETA > 0 && !etaSkipped {
+			if completed := progress.Completed(); completed >= etaCheckAfter {
+				if eta := progress.ETA(); eta > opts.MaxETA {
+					if !opts.Quiet {
+						progress.ClearLine()
+						fmt.Fprintf(os.Stderr, "[!] Skipping %s: ETA %s exceeds --max-eta %s\n",
+							opts.URL, eta.Round(time.Second), opts.MaxETA)
+						progress.Redraw()
+					}
+					workerCancel()
+					etaSkipped = true
+					break
+				}
+			}
+		}
 
 		if resumeState != nil {
 			resumeState.MarkCompleted(result.Path)
@@ -271,6 +298,8 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 			continue
 		}
 
+		progress.IncrementFound()
+
 		// Extract links before clearing body.
 		if opts.Crawl && result.Body != nil {
 			newPaths := crawl.ExtractPaths(result.Body, opts.URL)
@@ -278,6 +307,17 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 				if _, already := scannedSet[p]; !already {
 					crawledPaths = append(crawledPaths, p)
 					scannedSet[p] = struct{}{}
+				}
+			}
+			// Infer directories from crawled paths for recursive scanning.
+			if opts.Recursive && !opts.VHost {
+				for _, p := range newPaths {
+					for _, dir := range extractParentDirs(p, opts.MaxDepth) {
+						if _, already := scannedSet[dir+"/"]; !already {
+							discoveredDirs = append(discoveredDirs, dir)
+							scannedSet[dir+"/"] = struct{}{}
+						}
+					}
 				}
 			}
 		}
@@ -303,6 +343,16 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 		}
 	}
 
+	// If target was skipped due to ETA, drain remaining results and return.
+	if etaSkipped {
+		for range results {
+			// drain channel
+		}
+		progress.Stop()
+		stats.Duration = time.Since(startTime)
+		return out.WriteFooter(stats)
+	}
+
 	// 10. Periodic resume save.
 	if resumeState != nil {
 		_ = resumeState.Save()
@@ -318,17 +368,33 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 	}
 
 	// 12. Crawl passes.
+	var crawlDirs []string
 	if opts.Crawl && len(crawledPaths) > 0 {
-		err := runCrawlPasses(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, crawledPaths, scannedSet, methods, &stats, resumeState, 1)
+		var err error
+		crawlDirs, err = runCrawlPasses(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, crawledPaths, scannedSet, methods, &stats, resumeState, 1)
 		if err != nil {
 			progress.Stop()
 			return err
+		}
+		// Recursively scan directories discovered during crawling.
+		if opts.Recursive && !opts.VHost && len(crawlDirs) > 0 {
+			err := runRecursive(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, crawlDirs, paths, methods, &stats, resumeState, 1)
+			if err != nil {
+				progress.Stop()
+				return err
+			}
 		}
 	}
 
 	progress.Stop()
 
-	// 13. Write footer.
+	// 13. Print directory tree if requested.
+	if opts.Tree && !opts.Quiet {
+		allDirs := append(discoveredDirs, crawlDirs...)
+		output.PrintTree(os.Stderr, allDirs)
+	}
+
+	// 14. Write footer.
 	stats.Duration = time.Since(startTime)
 	if stats.Duration.Seconds() > 0 {
 		stats.RequestsPerSec = float64(stats.TotalRequests) / stats.Duration.Seconds()
@@ -383,12 +449,18 @@ func runRecursive(
 				dir, depth, opts.MaxDepth, len(newPaths))
 		}
 
-		// Per-directory smart filter recalibration.
-		if opts.SmartFilter && opts.SmartFilterPerDir {
+		// Build per-directory filter chain: copy non-smart filters, recalibrate smart filter.
+		dirChain := filter.NewChain()
+		for _, f := range chain.Filters() {
+			if _, ok := f.(*filter.SmartFilter); !ok {
+				dirChain.Add(f)
+			}
+		}
+		if opts.SmartFilter {
 			dirURL := opts.URL + "/" + strings.TrimLeft(dir, "/")
 			sf, err := filter.NewSmartFilter(ctx, req, dirURL, opts.SmartFilterThreshold)
 			if err == nil {
-				chain.Add(sf)
+				dirChain.Add(sf)
 				if !opts.Quiet {
 					fmt.Fprintf(os.Stderr, "[+] Smart filter recalibrated for /%s\n", dir)
 				}
@@ -418,7 +490,7 @@ func runRecursive(
 				continue
 			}
 
-			filtered, reason := chain.Apply(&result)
+			filtered, reason := dirChain.Apply(&result)
 			if filtered {
 				result.Filtered = true
 				result.FilterReason = reason
@@ -427,6 +499,7 @@ func runRecursive(
 				continue
 			}
 
+			progress.IncrementFound()
 			result.Body = nil
 
 			progress.ClearLine()
@@ -457,6 +530,27 @@ func runRecursive(
 	return nil
 }
 
+// extractParentDirs returns intermediate directory segments of a path,
+// limited to maxDepth levels. For example, "/js/asset/login.js" with
+// maxDepth=3 returns ["js", "js/asset"].
+func extractParentDirs(path string, maxDepth int) []string {
+	path = strings.TrimLeft(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) <= 1 {
+		return nil
+	}
+	// Exclude the last segment (the file itself).
+	n := len(parts) - 1
+	if n > maxDepth {
+		n = maxDepth
+	}
+	dirs := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		dirs = append(dirs, strings.Join(parts[:i], "/"))
+	}
+	return dirs
+}
+
 func looksLikeDirectory(result scanner.ScanResult) bool {
 	if strings.HasSuffix(result.Path, "/") {
 		return true
@@ -478,14 +572,23 @@ func looksLikeDirectory(result scanner.ScanResult) bool {
 }
 
 func createWriter(opts *config.Options) (output.Writer, error) {
+	var w output.Writer
+	var err error
 	switch opts.OutputFormat {
 	case "json":
-		return output.NewJSONWriter(opts.OutputFile)
+		w, err = output.NewJSONWriter(opts.OutputFile)
 	case "csv":
-		return output.NewCSVWriter(opts.OutputFile)
+		w, err = output.NewCSVWriter(opts.OutputFile)
 	default:
-		return output.NewTextWriter(opts.OutputFile, opts.NoColor, opts.Quiet)
+		w, err = output.NewTextWriter(opts.OutputFile, opts.NoColor, opts.Quiet)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if opts.SortBy != "" {
+		w = output.NewSortedWriter(w, opts.SortBy)
+	}
+	return w, nil
 }
 
 func resolveMethods(opts *config.Options) []string {
@@ -525,9 +628,9 @@ func runCrawlPasses(
 	stats *output.Stats,
 	resumeState *resume.State,
 	depth int,
-) error {
+) ([]string, error) {
 	if depth > opts.CrawlDepth || len(newPaths) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	items := expandItems(newPaths, methods)
@@ -550,6 +653,7 @@ func runCrawlPasses(
 	results := scanner.RunWorkerPool(ctx, req, items, workerCfg)
 
 	var nextPaths []string
+	var crawlDirs []string
 
 	for result := range results {
 		progress.Increment()
@@ -572,6 +676,8 @@ func runCrawlPasses(
 			continue
 		}
 
+		progress.IncrementFound()
+
 		// Extract links before clearing body.
 		if result.Body != nil {
 			discovered := crawl.ExtractPaths(result.Body, opts.URL)
@@ -581,13 +687,24 @@ func runCrawlPasses(
 					scannedSet[p] = struct{}{}
 				}
 			}
+			// Infer directories from crawled paths for recursive scanning.
+			if opts.Recursive && !opts.VHost {
+				for _, p := range discovered {
+					for _, dir := range extractParentDirs(p, opts.MaxDepth) {
+						if _, already := scannedSet[dir+"/"]; !already {
+							crawlDirs = append(crawlDirs, dir)
+							scannedSet[dir+"/"] = struct{}{}
+						}
+					}
+				}
+			}
 		}
 		result.Body = nil
 
 		progress.ClearLine()
 		if err := out.WriteResult(&result); err != nil {
 			progress.Redraw()
-			return err
+			return nil, err
 		}
 		progress.Redraw()
 
@@ -597,10 +714,14 @@ func runCrawlPasses(
 	}
 
 	if len(nextPaths) > 0 {
-		return runCrawlPasses(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, nextPaths, scannedSet, methods, stats, resumeState, depth+1)
+		moreDirs, err := runCrawlPasses(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, nextPaths, scannedSet, methods, stats, resumeState, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		crawlDirs = append(crawlDirs, moreDirs...)
 	}
 
-	return nil
+	return crawlDirs, nil
 }
 
 func printBanner(opts *config.Options, pathCount int) {
@@ -619,12 +740,17 @@ func printBanner(opts *config.Options, pathCount int) {
 		c, w, d, r, g, y, rs = "", "", "", "", "", "", ""
 	}
 
+	ver := version.Version
+	if ver != "dev" && !strings.HasPrefix(ver, "v") {
+		ver = "v" + ver
+	}
+
 	fmt.Fprintf(os.Stderr, `
 %s     ___  _      ______                %s
 %s    / _ \(_)____/ ____/_  __________   %s
 %s   / // / / __/ /_/ / / / /_  /_  /   %s
 %s  / ___/ / / / __/ / /_/ / / /_/ /_   %s
-%s /_/  /_/_/ /_/   \__,_/ /___/___/   %s %sv%s%s
+%s /_/  /_/_/ /_/   \__,_/ /___/___/   %s %s%s%s
 %s                                       %s
 %s    Web Path Brute-Forcer              %s
 %s    with Smart 404 Detection           %s
@@ -633,7 +759,7 @@ func printBanner(opts *config.Options, pathCount int) {
 		c, rs,
 		c, rs,
 		c, rs,
-		c, rs, d, version.Version, rs,
+		c, rs, d, ver, rs,
 		c, rs,
 		w, rs,
 		d, rs,
