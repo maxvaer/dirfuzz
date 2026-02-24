@@ -105,47 +105,7 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 		return fmt.Errorf("creating requester: %w", err)
 	}
 
-	// 3. Build filter chain.
-	needBody := opts.MatchBody != "" || opts.ExcludeBody != "" || opts.Crawl
-	chain := filter.NewChain()
-	if len(opts.IncludeStatus) > 0 || len(opts.ExcludeStatus) > 0 {
-		chain.Add(filter.NewStatusFilter(opts.IncludeStatus, opts.ExcludeStatus))
-	}
-	if len(opts.ExcludeSize) > 0 {
-		chain.Add(filter.NewSizeFilter(opts.ExcludeSize))
-	}
-
-	// 4. Smart filter calibration.
-	if opts.SmartFilter {
-		if !opts.Quiet {
-			fmt.Fprintf(os.Stderr, "[*] Calibrating smart filter against %s ...\n", opts.URL)
-		}
-		var sf *filter.SmartFilter
-		var sfErr error
-		if opts.VHost {
-			sf, sfErr = filter.NewSmartFilterVHost(ctx, req, opts.URL, opts.SmartFilterThreshold)
-		} else {
-			sf, sfErr = filter.NewSmartFilter(ctx, req, opts.URL, opts.SmartFilterThreshold)
-		}
-		if sfErr != nil {
-			fmt.Fprintf(os.Stderr, "[!] Smart filter disabled: %v\n", sfErr)
-		} else {
-			chain.Add(sf)
-			if !opts.Quiet {
-				fmt.Fprintf(os.Stderr, "[+] Smart filter ready\n")
-			}
-		}
-	}
-
-	// Body filters (added after smart filter so they run on remaining results).
-	if opts.MatchBody != "" {
-		chain.Add(filter.NewBodyMatchFilter(opts.MatchBody))
-	}
-	if opts.ExcludeBody != "" {
-		chain.Add(filter.NewBodyExcludeFilter(opts.ExcludeBody))
-	}
-
-	// 5. Resume support.
+	// 3. Resume support (before banner so path count is accurate).
 	var resumeState *resume.State
 	if opts.ResumeFile != "" {
 		existing, err := resume.Load(opts.ResumeFile)
@@ -182,7 +142,52 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 		return nil
 	}
 
-	// 6. Create output writer.
+	// 4. Print banner (before any other output).
+	if !opts.Quiet {
+		printBanner(opts, len(paths))
+	}
+
+	// 5. Build filter chain.
+	needBody := opts.MatchBody != "" || opts.ExcludeBody != "" || opts.Crawl
+	chain := filter.NewChain()
+	if len(opts.IncludeStatus) > 0 || len(opts.ExcludeStatus) > 0 {
+		chain.Add(filter.NewStatusFilter(opts.IncludeStatus, opts.ExcludeStatus))
+	}
+	if len(opts.ExcludeSize) > 0 {
+		chain.Add(filter.NewSizeFilter(opts.ExcludeSize))
+	}
+
+	// 6. Smart filter calibration.
+	if opts.SmartFilter {
+		if !opts.Quiet {
+			fmt.Fprintf(os.Stderr, "[*] Calibrating smart filter against %s ...\n", opts.URL)
+		}
+		var sf *filter.SmartFilter
+		var sfErr error
+		if opts.VHost {
+			sf, sfErr = filter.NewSmartFilterVHost(ctx, req, opts.URL, opts.SmartFilterThreshold)
+		} else {
+			sf, sfErr = filter.NewSmartFilter(ctx, req, "", opts.SmartFilterThreshold)
+		}
+		if sfErr != nil {
+			fmt.Fprintf(os.Stderr, "[!] Smart filter disabled: %v\n", sfErr)
+		} else {
+			chain.Add(sf)
+			if !opts.Quiet {
+				fmt.Fprintf(os.Stderr, "[+] Smart filter ready\n")
+			}
+		}
+	}
+
+	// Body filters (added after smart filter so they run on remaining results).
+	if opts.MatchBody != "" {
+		chain.Add(filter.NewBodyMatchFilter(opts.MatchBody))
+	}
+	if opts.ExcludeBody != "" {
+		chain.Add(filter.NewBodyExcludeFilter(opts.ExcludeBody))
+	}
+
+	// 7. Create output writer.
 	out, err := createWriter(opts)
 	if err != nil {
 		return fmt.Errorf("creating output writer: %w", err)
@@ -191,11 +196,6 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 
 	if err := out.WriteHeader(); err != nil {
 		return err
-	}
-
-	// 7. Print banner.
-	if !opts.Quiet {
-		printBanner(opts, len(paths))
 	}
 
 	// 8. Create throttler and hook runner.
@@ -465,8 +465,7 @@ func runRecursive(
 			}
 		}
 		if opts.SmartFilter {
-			dirURL := opts.URL + "/" + strings.TrimLeft(dir, "/")
-			sf, err := filter.NewSmartFilter(ctx, req, dirURL, opts.SmartFilterThreshold)
+			sf, err := filter.NewSmartFilter(ctx, req, dir, opts.SmartFilterThreshold)
 			if err == nil {
 				dirChain.Add(sf)
 				if !opts.Quiet {
@@ -774,14 +773,14 @@ func printBanner(opts *config.Options, pathCount int) {
 	}
 
 	fmt.Fprintf(os.Stderr, `
-%s     ___  _      ______                %s
-%s    / _ \(_)____/ ____/_  __________   %s
-%s   / // / / __/ /_/ / / / /_  /_  /   %s
-%s  / ___/ / / / __/ / /_/ / / /_/ /_   %s
-%s /_/  /_/_/ /_/   \__,_/ /___/___/   %s %s%s%s
-%s                                       %s
-%s    Web Path Brute-Forcer              %s
-%s    with Smart 404 Detection           %s
+%s     _ _       __                      %s
+%s  __| (_)_ __ / _|_   _ ________       %s
+%s / _` + "`" + ` | | '__| |_| | | |_  /_  /       %s
+%s| (_| | | |  |  _| |_| |/ / / /        %s
+%s \__,_|_|_|  |_|  \__,_/___/___| %s %s%s%s
+%s                                        %s
+%s    Web Path Brute-Forcer               %s
+%s    with Smart 404 Detection            %s
 `,
 		c, rs,
 		c, rs,

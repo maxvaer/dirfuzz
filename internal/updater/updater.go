@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -68,7 +70,14 @@ func Update() error {
 	}
 
 	if err := replaceBinary(bin); err != nil {
-		return fmt.Errorf("replacing binary: %w", err)
+		if errors.Is(err, os.ErrPermission) && runtime.GOOS != "windows" {
+			fmt.Fprintf(os.Stderr, "[!] Permission denied, retrying with sudo...\n")
+			if sudoErr := replaceBinaryWithSudo(bin); sudoErr != nil {
+				return fmt.Errorf("replacing binary with sudo: %w", sudoErr)
+			}
+		} else {
+			return fmt.Errorf("replacing binary: %w", err)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "[+] Updated to %s\n", release.TagName)
@@ -215,6 +224,51 @@ func extractTarGz(data []byte) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("binary %q not found in tar.gz archive", binaryName)
+}
+
+// replaceBinaryWithSudo writes the new binary to a temp file, then uses
+// sudo cp to install it. This lets the user enter their password via sudo's
+// native prompt instead of failing with a permission error.
+func replaceBinaryWithSudo(newBin []byte) error {
+	execPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp("", "dirfuzz-update-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(newBin); err != nil {
+		tmp.Close()
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	tmp.Close()
+
+	// Copy temp file to target with sudo.
+	cp := exec.Command("sudo", "cp", tmpPath, execPath)
+	cp.Stdin = os.Stdin
+	cp.Stdout = os.Stdout
+	cp.Stderr = os.Stderr
+	if err := cp.Run(); err != nil {
+		return fmt.Errorf("sudo cp: %w", err)
+	}
+
+	// Ensure the binary is executable.
+	chmod := exec.Command("sudo", "chmod", "755", execPath)
+	chmod.Stdin = os.Stdin
+	chmod.Stdout = os.Stdout
+	chmod.Stderr = os.Stderr
+	_ = chmod.Run()
+
+	return nil
 }
 
 func replaceBinary(newBin []byte) error {

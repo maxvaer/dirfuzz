@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/maxvaer/dirfuzz/internal/scanner"
 )
@@ -35,13 +36,17 @@ type SmartFilter struct {
 }
 
 // NewSmartFilter performs calibration against the target and returns a filter
-// that can detect soft-404 responses during scanning. Returns an error if
-// calibration fails entirely.
-func NewSmartFilter(ctx context.Context, req *scanner.Requester, targetURL string, threshold int) (*SmartFilter, error) {
+// that can detect soft-404 responses during scanning. basePath is the
+// directory prefix for probes (e.g. "" for root, "Home" for /Home/).
+// Returns an error if calibration fails entirely.
+func NewSmartFilter(ctx context.Context, req *scanner.Requester, basePath string, threshold int) (*SmartFilter, error) {
 	probes := generateProbes(5)
 
 	var results []probeResult
 	for _, probe := range probes {
+		if basePath != "" {
+			probe = strings.TrimRight(basePath, "/") + "/" + probe
+		}
 		resp, err := req.Do(ctx, "GET", probe, "")
 		if err != nil {
 			continue

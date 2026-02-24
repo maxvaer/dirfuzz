@@ -25,6 +25,7 @@ type Progress struct {
 	found     atomic.Int64
 	start     time.Time
 	done      chan struct{}
+	stopped   chan struct{} // closed when the display goroutine exits
 	quiet     bool
 	mu        sync.Mutex
 	visible   bool       // whether the progress line is currently drawn
@@ -34,19 +35,22 @@ type Progress struct {
 // NewProgress creates a progress tracker. Call Start() to begin display updates.
 func NewProgress(total int, quiet bool) *Progress {
 	return &Progress{
-		total: total,
-		start: time.Now(),
-		done:  make(chan struct{}),
-		quiet: quiet,
+		total:   total,
+		start:   time.Now(),
+		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
+		quiet:   quiet,
 	}
 }
 
 // Start begins periodically printing progress to stderr.
 func (p *Progress) Start() {
 	if p.quiet {
+		close(p.stopped)
 		return
 	}
 	go func() {
+		defer close(p.stopped)
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -147,9 +151,10 @@ func (p *Progress) ETA() time.Duration {
 	return time.Duration(remaining * float64(time.Second))
 }
 
-// Stop ends the progress display.
+// Stop ends the progress display and waits for the display goroutine to exit.
 func (p *Progress) Stop() {
 	close(p.done)
+	<-p.stopped
 }
 
 // buildBar creates a visual progress bar of the given width.

@@ -1,8 +1,17 @@
 package filter
 
 import (
+	"context"
+	"crypto/md5"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/maxvaer/dirfuzz/internal/config"
 	"github.com/maxvaer/dirfuzz/internal/scanner"
 )
 
@@ -166,5 +175,190 @@ func TestSmartFilter_MultipleBaselines(t *testing.T) {
 	r200pass := &scanner.ScanResult{StatusCode: 200, BodyHash: [16]byte{99}, ContentLength: 5000}
 	if sf.ShouldFilter(r200pass) {
 		t.Error("expected 200 with different hash to pass")
+	}
+}
+
+func TestNewSmartFilter_BasePathProbesCorrectDirectory(t *testing.T) {
+	// Track which paths were requested.
+	var mu sync.Mutex
+	var requestedPaths []string
+
+	rootBody := "root not found page"
+	subdirBody := "subdir custom error page with different content"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestedPaths = append(requestedPaths, r.URL.Path)
+		mu.Unlock()
+
+		if strings.HasPrefix(r.URL.Path, "/subdir/") {
+			fmt.Fprint(w, subdirBody)
+		} else {
+			fmt.Fprint(w, rootBody)
+		}
+	}))
+	defer server.Close()
+
+	req, err := scanner.NewRequester(&config.Options{
+		URL:     server.URL,
+		Timeout: 5 * time.Second,
+		Threads: 1,
+	})
+	if err != nil {
+		t.Fatalf("creating requester: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Test 1: empty basePath probes root paths.
+	requestedPaths = nil
+	_, err = NewSmartFilter(ctx, req, "", 50)
+	if err != nil {
+		t.Fatalf("root smart filter: %v", err)
+	}
+
+	mu.Lock()
+	rootPaths := make([]string, len(requestedPaths))
+	copy(rootPaths, requestedPaths)
+	mu.Unlock()
+
+	for _, p := range rootPaths {
+		if strings.HasPrefix(p, "/subdir/") {
+			t.Errorf("root filter probed subdir path: %s", p)
+		}
+		if !strings.Contains(p, "dirfuzz_probe_") {
+			t.Errorf("root filter probe missing prefix: %s", p)
+		}
+	}
+
+	// Test 2: basePath "subdir" probes under /subdir/.
+	mu.Lock()
+	requestedPaths = nil
+	mu.Unlock()
+
+	_, err = NewSmartFilter(ctx, req, "subdir", 50)
+	if err != nil {
+		t.Fatalf("subdir smart filter: %v", err)
+	}
+
+	mu.Lock()
+	subdirPaths := make([]string, len(requestedPaths))
+	copy(subdirPaths, requestedPaths)
+	mu.Unlock()
+
+	for _, p := range subdirPaths {
+		if !strings.HasPrefix(p, "/subdir/") {
+			t.Errorf("subdir filter probed outside subdir: %s", p)
+		}
+		if !strings.Contains(p, "dirfuzz_probe_") {
+			t.Errorf("subdir filter probe missing prefix: %s", p)
+		}
+	}
+}
+
+func TestNewSmartFilter_BasePathDifferentBaselines(t *testing.T) {
+	rootBody := "root not found page"
+	subdirBody := "subdir custom error page with different content"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/subdir/") {
+			fmt.Fprint(w, subdirBody)
+		} else {
+			fmt.Fprint(w, rootBody)
+		}
+	}))
+	defer server.Close()
+
+	req, err := scanner.NewRequester(&config.Options{
+		URL:     server.URL,
+		Timeout: 5 * time.Second,
+		Threads: 1,
+	})
+	if err != nil {
+		t.Fatalf("creating requester: %v", err)
+	}
+
+	ctx := context.Background()
+
+	rootSF, err := NewSmartFilter(ctx, req, "", 50)
+	if err != nil {
+		t.Fatalf("root smart filter: %v", err)
+	}
+
+	subdirSF, err := NewSmartFilter(ctx, req, "subdir", 50)
+	if err != nil {
+		t.Fatalf("subdir smart filter: %v", err)
+	}
+
+	// Result matching root 404 pattern.
+	rootResult := &scanner.ScanResult{
+		StatusCode:    200,
+		ContentLength: int64(len(rootBody)),
+		BodyHash:      md5.Sum([]byte(rootBody)),
+		WordCount:     len(strings.Fields(rootBody)),
+		LineCount:     1,
+	}
+
+	// Result matching subdir 404 pattern.
+	subdirResult := &scanner.ScanResult{
+		StatusCode:    200,
+		ContentLength: int64(len(subdirBody)),
+		BodyHash:      md5.Sum([]byte(subdirBody)),
+		WordCount:     len(strings.Fields(subdirBody)),
+		LineCount:     1,
+	}
+
+	// Root filter should catch root 404 but not subdir 404.
+	if !rootSF.ShouldFilter(rootResult) {
+		t.Error("root filter should filter root 404 page")
+	}
+	if rootSF.ShouldFilter(subdirResult) {
+		t.Error("root filter should NOT filter subdir 404 page")
+	}
+
+	// Subdir filter should catch subdir 404 but not root 404.
+	if !subdirSF.ShouldFilter(subdirResult) {
+		t.Error("subdir filter should filter subdir 404 page")
+	}
+	if subdirSF.ShouldFilter(rootResult) {
+		t.Error("subdir filter should NOT filter root 404 page")
+	}
+}
+
+func TestNewSmartFilter_NestedBasePath(t *testing.T) {
+	deepBody := "deeply nested error page"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/a/b/c/") {
+			fmt.Fprint(w, deepBody)
+		} else {
+			fmt.Fprint(w, "other page")
+		}
+	}))
+	defer server.Close()
+
+	req, err := scanner.NewRequester(&config.Options{
+		URL:     server.URL,
+		Timeout: 5 * time.Second,
+		Threads: 1,
+	})
+	if err != nil {
+		t.Fatalf("creating requester: %v", err)
+	}
+
+	sf, err := NewSmartFilter(context.Background(), req, "a/b/c", 50)
+	if err != nil {
+		t.Fatalf("nested smart filter: %v", err)
+	}
+
+	result := &scanner.ScanResult{
+		StatusCode:    200,
+		ContentLength: int64(len(deepBody)),
+		BodyHash:      md5.Sum([]byte(deepBody)),
+		WordCount:     len(strings.Fields(deepBody)),
+		LineCount:     1,
+	}
+	if !sf.ShouldFilter(result) {
+		t.Error("nested filter should filter its own 404 page")
 	}
 }
