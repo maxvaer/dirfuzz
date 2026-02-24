@@ -212,6 +212,13 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 		KeepBody:  needBody,
 	}
 
+	// 8b. Set up interactive pause/resume.
+	pauser, cleanupTerminal := startStdinToggle(opts.Quiet)
+	defer cleanupTerminal()
+	if pauser != nil {
+		workerCfg.Pauser = pauser
+	}
+
 	// 9. Build work items and run worker pool.
 	methods := resolveMethods(opts)
 	var items []scanner.WorkItem
@@ -233,6 +240,9 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 	}
 
 	progress := output.NewProgress(len(items), opts.Quiet)
+	if pauser != nil {
+		progress.SetPauser(pauser)
+	}
 	progress.Start()
 	startTime := time.Now()
 
@@ -353,6 +363,9 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 		return out.WriteFooter(stats)
 	}
 
+	// Stop main progress bar before recursive/crawl phases (they create their own).
+	progress.Stop()
+
 	// 10. Periodic resume save.
 	if resumeState != nil {
 		_ = resumeState.Save()
@@ -360,9 +373,8 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 
 	// 11. Recursive scanning (breadth-first).
 	if opts.Recursive && !opts.VHost && len(discoveredDirs) > 0 {
-		err := runRecursive(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, discoveredDirs, paths, methods, &stats, resumeState, 1)
+		err := runRecursive(ctx, opts, req, chain, out, throttler, hookRunner, needBody, discoveredDirs, paths, methods, &stats, resumeState, pauser, 1)
 		if err != nil {
-			progress.Stop()
 			return err
 		}
 	}
@@ -371,22 +383,18 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 	var crawlDirs []string
 	if opts.Crawl && len(crawledPaths) > 0 {
 		var err error
-		crawlDirs, err = runCrawlPasses(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, crawledPaths, scannedSet, methods, &stats, resumeState, 1)
+		crawlDirs, err = runCrawlPasses(ctx, opts, req, chain, out, throttler, hookRunner, needBody, crawledPaths, scannedSet, methods, &stats, resumeState, pauser, 1)
 		if err != nil {
-			progress.Stop()
 			return err
 		}
 		// Recursively scan directories discovered during crawling.
 		if opts.Recursive && !opts.VHost && len(crawlDirs) > 0 {
-			err := runRecursive(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, crawlDirs, paths, methods, &stats, resumeState, 1)
+			err := runRecursive(ctx, opts, req, chain, out, throttler, hookRunner, needBody, crawlDirs, paths, methods, &stats, resumeState, pauser, 1)
 			if err != nil {
-				progress.Stop()
 				return err
 			}
 		}
 	}
-
-	progress.Stop()
 
 	// 13. Print directory tree if requested.
 	if opts.Tree && !opts.Quiet {
@@ -414,7 +422,6 @@ func runRecursive(
 	req *scanner.Requester,
 	chain *filter.Chain,
 	out output.Writer,
-	progress *output.Progress,
 	throttler *scanner.Throttler,
 	hookRunner *hook.Runner,
 	needBody bool,
@@ -423,6 +430,7 @@ func runRecursive(
 	methods []string,
 	stats *output.Stats,
 	resumeState *resume.State,
+	pauser *scanner.Pauser,
 	depth int,
 ) error {
 	if depth > opts.MaxDepth {
@@ -471,9 +479,18 @@ func runRecursive(
 			Threads:   opts.Threads,
 			Throttler: throttler,
 			KeepBody:  needBody,
+			Pauser:    pauser,
 		}
 
 		newItems := expandItems(newPaths, methods)
+
+		// Create a fresh progress bar for this directory.
+		progress := output.NewProgress(len(newItems), opts.Quiet)
+		if pauser != nil {
+			progress.SetPauser(pauser)
+		}
+		progress.Start()
+
 		results := scanner.RunWorkerPool(ctx, req, newItems, workerCfg)
 		stats.TotalRequests += len(newItems)
 
@@ -505,6 +522,7 @@ func runRecursive(
 			progress.ClearLine()
 			if err := out.WriteResult(&result); err != nil {
 				progress.Redraw()
+				progress.Stop()
 				return err
 			}
 			progress.Redraw()
@@ -517,6 +535,8 @@ func runRecursive(
 				nextDirs = append(nextDirs, result.Path)
 			}
 		}
+
+		progress.Stop()
 	}
 
 	if resumeState != nil {
@@ -524,7 +544,7 @@ func runRecursive(
 	}
 
 	if len(nextDirs) > 0 {
-		return runRecursive(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, nextDirs, basePaths, methods, stats, resumeState, depth+1)
+		return runRecursive(ctx, opts, req, chain, out, throttler, hookRunner, needBody, nextDirs, basePaths, methods, stats, resumeState, pauser, depth+1)
 	}
 
 	return nil
@@ -618,7 +638,6 @@ func runCrawlPasses(
 	req *scanner.Requester,
 	chain *filter.Chain,
 	out output.Writer,
-	progress *output.Progress,
 	throttler *scanner.Throttler,
 	hookRunner *hook.Runner,
 	needBody bool,
@@ -627,6 +646,7 @@ func runCrawlPasses(
 	methods []string,
 	stats *output.Stats,
 	resumeState *resume.State,
+	pauser *scanner.Pauser,
 	depth int,
 ) ([]string, error) {
 	if depth > opts.CrawlDepth || len(newPaths) == 0 {
@@ -634,20 +654,25 @@ func runCrawlPasses(
 	}
 
 	items := expandItems(newPaths, methods)
-	progress.AddTotal(len(items))
 	stats.TotalRequests += len(items)
 
 	if !opts.Quiet {
-		progress.ClearLine()
-		fmt.Fprintf(os.Stderr, "[*] Crawl pass %d/%d: %d new paths discovered\n",
+		fmt.Fprintf(os.Stderr, "\n[*] Crawl pass %d/%d: %d new paths discovered\n",
 			depth, opts.CrawlDepth, len(newPaths))
-		progress.Redraw()
 	}
+
+	// Create a fresh progress bar for this crawl pass.
+	progress := output.NewProgress(len(items), opts.Quiet)
+	if pauser != nil {
+		progress.SetPauser(pauser)
+	}
+	progress.Start()
 
 	workerCfg := scanner.WorkerConfig{
 		Threads:   opts.Threads,
 		Throttler: throttler,
 		KeepBody:  needBody,
+		Pauser:    pauser,
 	}
 
 	results := scanner.RunWorkerPool(ctx, req, items, workerCfg)
@@ -704,6 +729,7 @@ func runCrawlPasses(
 		progress.ClearLine()
 		if err := out.WriteResult(&result); err != nil {
 			progress.Redraw()
+			progress.Stop()
 			return nil, err
 		}
 		progress.Redraw()
@@ -713,8 +739,10 @@ func runCrawlPasses(
 		}
 	}
 
+	progress.Stop()
+
 	if len(nextPaths) > 0 {
-		moreDirs, err := runCrawlPasses(ctx, opts, req, chain, out, progress, throttler, hookRunner, needBody, nextPaths, scannedSet, methods, stats, resumeState, depth+1)
+		moreDirs, err := runCrawlPasses(ctx, opts, req, chain, out, throttler, hookRunner, needBody, nextPaths, scannedSet, methods, stats, resumeState, pauser, depth+1)
 		if err != nil {
 			return nil, err
 		}

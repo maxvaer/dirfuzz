@@ -16,12 +16,30 @@ import (
 	"github.com/maxvaer/dirfuzz/internal/updater"
 	"github.com/maxvaer/dirfuzz/pkg/version"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 var (
 	opts       config.Options
 	updateFlag bool
 )
+
+type flagGroup struct {
+	title string
+	flags []string
+}
+
+var helpGroups = []flagGroup{
+	{"TARGET", []string{"url", "urls-file", "request-file", "wordlist", "extensions", "force-extensions", "cidr", "ports"}},
+	{"DISCOVERY", []string{"recursive", "max-depth", "crawl", "crawl-depth", "vhost", "vhost-wordlist"}},
+	{"MATCHERS", []string{"include-status", "match-body"}},
+	{"FILTERS", []string{"exclude-status", "exclude-size", "exclude-body", "smart-filter", "smart-filter-threshold", "smart-filter-per-dir"}},
+	{"RATE-LIMIT", []string{"threads", "timeout", "delay", "adaptive-throttle", "max-eta"}},
+	{"HTTP", []string{"header", "user-agent", "proxy", "follow-redirects", "methods"}},
+	{"OUTPUT", []string{"output", "format", "quiet", "no-color", "sort", "tree", "on-result"}},
+	{"CONFIGURATION", []string{"resume-file"}},
+	{"UPDATE", []string{"update"}},
+}
 
 var rootCmd = &cobra.Command{
 	Use:     "dirfuzz -u <url> [flags]",
@@ -81,6 +99,8 @@ filtering of custom 404 pages (soft-404s) that return HTTP 200.`,
 			}
 		}
 		if opts.URL == "" && opts.URLsFile == "" && opts.CIDRTargets == "" {
+			_ = cmd.Help()
+			fmt.Fprintln(os.Stderr)
 			return fmt.Errorf("target required: use -u, -l, --cidr, or --request-file")
 		}
 		if opts.URL != "" && !strings.HasPrefix(opts.URL, "http://") && !strings.HasPrefix(opts.URL, "https://") {
@@ -191,6 +211,24 @@ func init() {
 	// Update
 	f.BoolVar(&updateFlag, "update", false, "Update dirfuzz to the latest version")
 
+	// Custom help: categorized flags like httpx.
+	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		w := os.Stderr
+		fmt.Fprint(w, helpBanner(cmd.Version))
+		fmt.Fprintf(w, "%s\n\nUsage:\n  %s\n", cmd.Long, cmd.UseLine())
+		fmt.Fprintf(w, "\nExamples:\n%s\n", cmd.Example)
+		fmt.Fprintf(w, "\nFlags:\n")
+		for _, g := range helpGroups {
+			fmt.Fprintf(w, "\n%s:\n", g.title)
+			for _, name := range g.flags {
+				if f := cmd.Flags().Lookup(name); f != nil {
+					fmt.Fprintln(w, formatFlag(f))
+				}
+			}
+		}
+		fmt.Fprintln(w)
+	})
+
 	// Parse headers from string slice into map in PreRun.
 	rootCmd.PreRunE = chainPreRun(rootCmd.PreRunE, func(cmd *cobra.Command, args []string) error {
 		headers, _ := f.GetStringSlice("header")
@@ -268,3 +306,46 @@ func (v *intSliceValue) Set(s string) error {
 }
 
 func (v *intSliceValue) Type() string { return "ints" }
+
+func formatFlag(f *pflag.Flag) string {
+	var left string
+	if f.Shorthand != "" {
+		left = fmt.Sprintf("-%s, --%s", f.Shorthand, f.Name)
+	} else {
+		left = fmt.Sprintf("    --%s", f.Name)
+	}
+
+	typ := f.Value.Type()
+	if typ != "bool" {
+		left += " " + typ
+	}
+
+	// Pad to fixed column width for aligned descriptions.
+	const col = 36
+	for len(left) < col {
+		left += " "
+	}
+
+	right := f.Usage
+	// Show default for non-zero values.
+	def := f.DefValue
+	if def != "" && def != "false" && def != "0" && def != "0s" && def != "[]" {
+		right += fmt.Sprintf(" (default %s)", def)
+	}
+
+	return "   " + left + right
+}
+
+func helpBanner(ver string) string {
+	if ver != "dev" && ver != "" && !strings.HasPrefix(ver, "v") {
+		ver = "v" + ver
+	}
+	return fmt.Sprintf(`
+     ___  _      ______
+    / _ \(_)____/ ____/_  __________
+   / // / / __/ /_/ / / / /_  /_  /
+  / ___/ / / / __/ / /_/ / / /_/ /_
+ /_/  /_/_/ /_/   \__,_/ /___/___/   %s
+
+`, ver)
+}

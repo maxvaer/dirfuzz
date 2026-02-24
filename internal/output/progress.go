@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// PauseState provides pause-related information for display and ETA.
+type PauseState interface {
+	IsPaused() bool
+	PausedDuration() time.Duration
+	CurrentPauseDuration() time.Duration
+}
+
 // Progress tracks and displays scan progress on stderr.
 type Progress struct {
 	total     int
@@ -20,7 +27,8 @@ type Progress struct {
 	done      chan struct{}
 	quiet     bool
 	mu        sync.Mutex
-	visible   bool // whether the progress line is currently drawn
+	visible   bool       // whether the progress line is currently drawn
+	pauser    PauseState // may be nil
 }
 
 // NewProgress creates a progress tracker. Call Start() to begin display updates.
@@ -106,6 +114,13 @@ func (p *Progress) IncrementFound() {
 	p.found.Add(1)
 }
 
+// SetPauser attaches a PauseState for pause-aware ETA and display.
+func (p *Progress) SetPauser(ps PauseState) {
+	p.mu.Lock()
+	p.pauser = ps
+	p.mu.Unlock()
+}
+
 // AddTotal increases the total request count (e.g. when crawl discovers new paths).
 func (p *Progress) AddTotal(n int) {
 	p.mu.Lock()
@@ -118,6 +133,9 @@ func (p *Progress) AddTotal(n int) {
 func (p *Progress) ETA() time.Duration {
 	completed := p.completed.Load()
 	elapsed := time.Since(p.start).Seconds()
+	if p.pauser != nil {
+		elapsed -= p.pauser.PausedDuration().Seconds()
+	}
 	if elapsed <= 0 || completed <= 0 {
 		return 0
 	}
@@ -162,6 +180,12 @@ func buildBar(pct float64, width int) string {
 func (p *Progress) draw() {
 	completed := p.completed.Load()
 	elapsed := time.Since(p.start).Seconds()
+	if p.pauser != nil {
+		elapsed -= p.pauser.PausedDuration().Seconds()
+		if elapsed < 0 {
+			elapsed = 0
+		}
+	}
 	rate := float64(0)
 	if elapsed > 0 {
 		rate = float64(completed) / elapsed
@@ -178,10 +202,16 @@ func (p *Progress) draw() {
 		eta = fmt.Sprintf("ETA: %s", time.Duration(remaining*float64(time.Second)).Round(time.Second))
 	}
 
+	pauseTag := ""
+	if p.pauser != nil && p.pauser.IsPaused() {
+		pd := p.pauser.CurrentPauseDuration().Round(time.Second)
+		pauseTag = fmt.Sprintf(" [PAUSED %s]", pd)
+	}
+
 	bar := buildBar(pct, 20)
 
-	fmt.Fprintf(os.Stderr, "\r\033[K%s %3.0f%% | %d/%d | %.0f req/s | Found: %d | Filtered: %d | Errors: %d | %s",
+	fmt.Fprintf(os.Stderr, "\r\033[K%s %3.0f%% | %d/%d | %.0f req/s | Found: %d | Filtered: %d | Errors: %d | %s%s",
 		bar, pct, completed, p.total, rate,
-		p.found.Load(), p.filtered.Load(), p.errors.Load(), eta)
+		p.found.Load(), p.filtered.Load(), p.errors.Load(), eta, pauseTag)
 	p.visible = true
 }

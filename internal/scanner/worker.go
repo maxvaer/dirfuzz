@@ -10,7 +10,8 @@ import (
 type WorkerConfig struct {
 	Threads   int
 	Throttler *Throttler
-	KeepBody  bool // retain response body in ScanResult for body filters
+	KeepBody  bool    // retain response body in ScanResult for body filters
+	Pauser    *Pauser // nil = no pause support
 }
 
 // RunWorkerPool fans out work items across workers and returns a channel
@@ -45,6 +46,10 @@ func RunWorkerPool(
 		go func() {
 			defer wg.Done()
 			for item := range itemsCh {
+				if cfg.Pauser != nil {
+					cfg.Pauser.Wait()
+				}
+
 				delay := cfg.Throttler.Delay()
 				if delay > 0 {
 					select {
