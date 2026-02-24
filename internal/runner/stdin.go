@@ -28,6 +28,10 @@ func startStdinToggle(quiet bool) (pauser *scanner.Pauser, cleanup func()) {
 		return nil, func() {}
 	}
 
+	// MakeRaw disables OPOST which stops \n → \r\n translation, causing
+	// cursor alignment issues. Re-enable it since we only need raw input.
+	fixOutputProcessing(fd)
+
 	pauser = scanner.NewPauser()
 
 	cleanup = func() {
