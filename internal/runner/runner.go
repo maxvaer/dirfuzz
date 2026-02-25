@@ -178,6 +178,12 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 			}
 		}
 	}
+	// Duplicate filter catches catch-all routes that serve the same
+	// page for every subpath (e.g. /app/login/*) — these evade smart
+	// filter calibration because the probes hit a different route.
+	if opts.DuplicateThreshold > 0 {
+		chain.Add(filter.NewDuplicateFilter(opts.DuplicateThreshold))
+	}
 
 	// Body filters (added after smart filter so they run on remaining results).
 	if opts.MatchBody != "" {
@@ -260,6 +266,7 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 	for _, item := range items {
 		scannedSet[item.Path] = struct{}{}
 	}
+	seenDirs := make(map[string]struct{})
 
 	// ETA-based skip: check after a minimum number of requests for stable estimate.
 	etaCheckAfter := int64(100)
@@ -323,9 +330,10 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 			if opts.Recursive && !opts.VHost {
 				for _, p := range newPaths {
 					for _, dir := range extractParentDirs(p, opts.MaxDepth) {
-						if _, already := scannedSet[dir+"/"]; !already {
+						key := normalizeDirKey(dir)
+						if _, already := seenDirs[key]; !already {
 							discoveredDirs = append(discoveredDirs, dir)
-							scannedSet[dir+"/"] = struct{}{}
+							seenDirs[key] = struct{}{}
 						}
 					}
 				}
@@ -349,7 +357,20 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 
 		// Collect directories for recursive scanning.
 		if opts.Recursive && !opts.VHost && looksLikeDirectory(result) {
-			discoveredDirs = append(discoveredDirs, result.Path)
+			dir := strings.TrimRight(result.Path, "/")
+			key := normalizeDirKey(dir)
+			if _, already := seenDirs[key]; !already {
+				if isStaticAssetDir(dir) {
+					if !opts.Quiet {
+						progress.ClearLine()
+						fmt.Fprintf(os.Stderr, "[*] Skipping /%s/ (static asset directory)\n", dir)
+						progress.Redraw()
+					}
+				} else {
+					discoveredDirs = append(discoveredDirs, dir)
+				}
+				seenDirs[key] = struct{}{}
+			}
 		}
 	}
 
@@ -437,13 +458,48 @@ func runRecursive(
 		return nil
 	}
 
+	// Deduplicate incoming dirs (case-insensitive, ignore trailing slash).
+	dirs = deduplicateDirs(dirs)
+
+	// Find parent smart filter for directory probe check.
+	var parentSF *filter.SmartFilter
+	for _, f := range chain.Filters() {
+		if sf, ok := f.(*filter.SmartFilter); ok {
+			parentSF = sf
+			break
+		}
+	}
+
 	var nextDirs []string
+	seenDirs := make(map[string]struct{})
 
 	for _, dir := range dirs {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+
+		// Quick probe: if the directory page itself matches the parent
+		// smart filter baseline (soft-404), skip recursing into it.
+		if parentSF != nil {
+			probeResp, err := req.Do(ctx, "GET", strings.TrimRight(dir, "/")+"/", "")
+			if err == nil {
+				probeResult := &scanner.ScanResult{
+					StatusCode:    probeResp.StatusCode,
+					ContentLength: probeResp.ContentLength,
+					BodyHash:      probeResp.BodyHash,
+					WordCount:     probeResp.WordCount,
+					LineCount:     probeResp.LineCount,
+				}
+				if parentSF.ShouldFilter(probeResult) {
+					if !opts.Quiet {
+						fmt.Fprintf(os.Stderr, "\n[*] Skipping /%s/ (directory page matches soft-404 baseline)\n",
+							strings.TrimRight(dir, "/"))
+					}
+					continue
+				}
+			}
 		}
 
 		// Build new paths by prepending the discovered directory.
@@ -453,14 +509,17 @@ func runRecursive(
 		}
 
 		if !opts.Quiet {
-			fmt.Fprintf(os.Stderr, "\n[*] Recursing into /%s (depth %d/%d, %d paths)\n",
-				dir, depth, opts.MaxDepth, len(newPaths))
+			fmt.Fprintf(os.Stderr, "\n[*] Recursing into /%s/ (depth %d/%d, %d paths)\n",
+				strings.TrimRight(dir, "/"), depth, opts.MaxDepth, len(newPaths))
 		}
 
-		// Build per-directory filter chain: copy non-smart filters, recalibrate smart filter.
+		// Build per-directory filter chain: copy static filters, recalibrate smart + duplicate.
 		dirChain := filter.NewChain()
 		for _, f := range chain.Filters() {
-			if _, ok := f.(*filter.SmartFilter); !ok {
+			switch f.(type) {
+			case *filter.SmartFilter, *filter.DuplicateFilter:
+				// Skip — these are recreated per directory below.
+			default:
 				dirChain.Add(f)
 			}
 		}
@@ -472,6 +531,9 @@ func runRecursive(
 					fmt.Fprintf(os.Stderr, "[+] Smart filter recalibrated for /%s\n", dir)
 				}
 			}
+		}
+		if opts.DuplicateThreshold > 0 {
+			dirChain.Add(filter.NewDuplicateFilter(opts.DuplicateThreshold))
 		}
 
 		workerCfg := scanner.WorkerConfig{
@@ -531,7 +593,14 @@ func runRecursive(
 			}
 
 			if looksLikeDirectory(result) {
-				nextDirs = append(nextDirs, result.Path)
+				dir := strings.TrimRight(result.Path, "/")
+				key := normalizeDirKey(dir)
+				if _, already := seenDirs[key]; !already {
+					if !isStaticAssetDir(dir) {
+						nextDirs = append(nextDirs, dir)
+					}
+					seenDirs[key] = struct{}{}
+				}
 			}
 		}
 
@@ -568,6 +637,47 @@ func extractParentDirs(path string, maxDepth int) []string {
 		dirs = append(dirs, strings.Join(parts[:i], "/"))
 	}
 	return dirs
+}
+
+// normalizeDirKey returns a canonical key for directory deduplication:
+// trimmed of trailing slashes and lowercased so /Home, /home/, /Home/ all
+// map to the same key.
+func normalizeDirKey(dir string) string {
+	return strings.ToLower(strings.TrimRight(dir, "/"))
+}
+
+// staticAssetDirs contains directory names that are typically static assets
+// and not worth recursing into during directory fuzzing.
+var staticAssetDirs = map[string]struct{}{
+	"css": {}, "images": {}, "img": {}, "fonts": {},
+	"assets": {}, "media": {}, ".hg": {},
+}
+
+// isStaticAssetDir returns true if the last segment of the directory path
+// is a common static asset directory name that is not worth recursing into.
+func isStaticAssetDir(dir string) bool {
+	dir = strings.TrimRight(dir, "/")
+	lastSeg := dir
+	if idx := strings.LastIndex(dir, "/"); idx >= 0 {
+		lastSeg = dir[idx+1:]
+	}
+	_, ok := staticAssetDirs[strings.ToLower(lastSeg)]
+	return ok
+}
+
+// deduplicateDirs returns dirs with case-insensitive, slash-normalized
+// duplicates removed, keeping the first occurrence.
+func deduplicateDirs(dirs []string) []string {
+	seen := make(map[string]struct{}, len(dirs))
+	out := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		key := normalizeDirKey(d)
+		if _, already := seen[key]; !already {
+			out = append(out, strings.TrimRight(d, "/"))
+			seen[key] = struct{}{}
+		}
+	}
+	return out
 }
 
 func looksLikeDirectory(result scanner.ScanResult) bool {

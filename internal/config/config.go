@@ -21,6 +21,7 @@ type Options struct {
 	SmartFilter          bool
 	SmartFilterThreshold int  // bytes tolerance
 	SmartFilterPerDir    bool // re-calibrate per subdirectory
+	DuplicateThreshold   int  // identical responses allowed before filtering (0 = disabled)
 
 	// Status filtering
 	IncludeStatus []int

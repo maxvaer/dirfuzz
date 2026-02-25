@@ -33,7 +33,7 @@ var helpGroups = []flagGroup{
 	{"TARGET", []string{"url", "urls-file", "request-file", "wordlist", "extensions", "force-extensions", "cidr", "ports"}},
 	{"DISCOVERY", []string{"recursive", "max-depth", "crawl", "crawl-depth", "vhost", "vhost-wordlist"}},
 	{"MATCHERS", []string{"include-status", "match-body"}},
-	{"FILTERS", []string{"exclude-status", "exclude-size", "exclude-body", "smart-filter", "smart-filter-threshold", "smart-filter-per-dir"}},
+	{"FILTERS", []string{"exclude-status", "exclude-size", "exclude-body", "smart-filter", "smart-filter-threshold", "smart-filter-per-dir", "duplicate-threshold"}},
 	{"RATE-LIMIT", []string{"threads", "timeout", "delay", "adaptive-throttle", "max-eta"}},
 	{"HTTP", []string{"header", "user-agent", "proxy", "follow-redirects", "methods"}},
 	{"OUTPUT", []string{"output", "format", "quiet", "no-color", "sort", "tree", "on-result"}},
@@ -151,6 +151,7 @@ func init() {
 	f.BoolVar(&opts.SmartFilter, "smart-filter", true, "Enable smart 404 detection")
 	f.IntVar(&opts.SmartFilterThreshold, "smart-filter-threshold", 50, "Size tolerance in bytes for smart filter")
 	f.BoolVar(&opts.SmartFilterPerDir, "smart-filter-per-dir", false, "Re-calibrate smart filter per subdirectory")
+	f.IntVar(&opts.DuplicateThreshold, "duplicate-threshold", 2, "Duplicates allowed before filtering same responses (0 to disable)")
 
 	// Filtering
 	f.VarP(&intSliceValue{target: &opts.IncludeStatus}, "include-status", "i", "Only show these status codes (comma-separated)")
@@ -169,7 +170,7 @@ func init() {
 
 	// Recursion
 	f.BoolVar(&opts.Recursive, "recursive", false, "Enable recursive scanning")
-	f.IntVarP(&opts.MaxDepth, "max-depth", "R", 3, "Maximum recursion depth")
+	f.IntVarP(&opts.MaxDepth, "max-depth", "R", 2, "Maximum recursion depth")
 
 	// Resume
 	f.StringVar(&opts.ResumeFile, "resume-file", "", "File to save/load scan progress for resume")

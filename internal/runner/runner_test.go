@@ -184,6 +184,54 @@ func TestCrawlDiscovery(t *testing.T) {
 	}
 }
 
+func TestRecursiveSkipsSoft404Directories(t *testing.T) {
+	// Server: /admin is a real directory with content,
+	// /ghost returns the same soft-404 page as all unknown paths.
+	const soft404 = "This is a custom error page that looks legit but is really a soft 404."
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/admin" || r.URL.Path == "/admin/":
+			w.WriteHeader(301)
+			http.Redirect(w, r, "/admin/", 301)
+		case strings.HasPrefix(r.URL.Path, "/admin/"):
+			w.WriteHeader(200)
+			fmt.Fprint(w, "real admin content for "+r.URL.Path)
+		case r.URL.Path == "/ghost" || r.URL.Path == "/ghost/":
+			// Redirect like a directory, but content is soft-404.
+			w.WriteHeader(200)
+			fmt.Fprint(w, soft404)
+		default:
+			w.WriteHeader(200)
+			fmt.Fprint(w, soft404)
+		}
+	}))
+	defer srv.Close()
+
+	wordlist := writeWordlist(t, []string{"admin", "ghost", "panel"})
+	opts := testOpts(t, srv.URL, wordlist)
+	opts.SmartFilter = true
+	opts.SmartFilterThreshold = 50
+	opts.Recursive = true
+	opts.MaxDepth = 1
+	opts.Crawl = false
+	opts.DuplicateThreshold = 0 // disable to isolate smart filter behavior
+
+	if err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+
+	out := readOutput(t, opts.OutputFile)
+	// /admin should appear (real content, different from soft-404).
+	if !strings.Contains(out, "/admin") {
+		t.Errorf("expected /admin in output, got:\n%s", out)
+	}
+	// /ghost should NOT appear (matches soft-404 baseline).
+	if strings.Contains(out, "/ghost") {
+		t.Errorf("unexpected /ghost in output — smart filter should have caught it:\n%s", out)
+	}
+}
+
 func TestETASkip(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)

@@ -66,27 +66,84 @@ func TestSmartFilter_FuzzyLengthMatch(t *testing.T) {
 		threshold: 50,
 	}
 
-	// Within threshold: length 4520, word count 198 → should be filtered.
+	// Within threshold: length 4520, word count 198, line count 50 → 3/3 match → filtered.
 	result := &scanner.ScanResult{
 		StatusCode:    200,
 		ContentLength: 4520,
 		WordCount:     198,
+		LineCount:     50,
 	}
 	if !sf.ShouldFilter(result) {
 		t.Error("expected fuzzy match within threshold to be filtered")
 	}
 
-	// Outside length threshold: length 4600 → should pass.
-	result.ContentLength = 4600
+	// All 3 metrics outside tolerance → should pass (0/3).
+	result.ContentLength = 9999
+	result.WordCount = 50
+	result.LineCount = 999
 	if sf.ShouldFilter(result) {
-		t.Error("expected length outside threshold to pass through")
+		t.Error("expected all metrics outside tolerance to pass")
 	}
 
-	// Within length but very different word count → should pass.
+	// Only length matches (1/3) → should pass.
 	result.ContentLength = 4510
 	result.WordCount = 50
+	result.LineCount = 999
 	if sf.ShouldFilter(result) {
-		t.Error("expected divergent word count to pass through")
+		t.Error("expected only-length match (1/3) to pass")
+	}
+}
+
+func TestSmartFilter_CompositeScoring_WordsAndLines(t *testing.T) {
+	// Composite scoring: if words and lines match but length is outside
+	// threshold, should still filter (2/3 match).
+	sf := &SmartFilter{
+		baselines: []baseline{
+			{
+				statusCode:    200,
+				contentLength: 4500,
+				wordCount:     200,
+				lineCount:     50,
+				mode:          matchFuzzyLength,
+			},
+		},
+		threshold: 50,
+	}
+
+	result := &scanner.ScanResult{
+		StatusCode:    200,
+		ContentLength: 4600, // outside length threshold (diff=100 > 50)
+		WordCount:     202,  // within word threshold (5%, min 5 → 10)
+		LineCount:     51,   // within line threshold (10%, min 2 → 5)
+	}
+	if !sf.ShouldFilter(result) {
+		t.Error("expected words+lines match (2/3) to be filtered even with length outside threshold")
+	}
+}
+
+func TestSmartFilter_CompositeScoring_LengthAndLines(t *testing.T) {
+	// Length and lines match, words diverge → 2/3 → filtered.
+	sf := &SmartFilter{
+		baselines: []baseline{
+			{
+				statusCode:    200,
+				contentLength: 4500,
+				wordCount:     200,
+				lineCount:     50,
+				mode:          matchFuzzyLength,
+			},
+		},
+		threshold: 50,
+	}
+
+	result := &scanner.ScanResult{
+		StatusCode:    200,
+		ContentLength: 4520, // within threshold
+		WordCount:     50,   // way outside
+		LineCount:     50,   // exact match
+	}
+	if !sf.ShouldFilter(result) {
+		t.Error("expected length+lines match (2/3) to be filtered")
 	}
 }
 

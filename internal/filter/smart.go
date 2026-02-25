@@ -188,14 +188,26 @@ func (sf *SmartFilter) ShouldFilter(result *scanner.ScanResult) bool {
 			return result.BodyHash == b.bodyHash
 
 		case matchFuzzyLength:
-			lengthDelta := abs64(result.ContentLength - b.contentLength)
-			if lengthDelta > int64(sf.threshold) {
-				return false
+			// Composite scoring: require at least 2 of 3 metrics to match.
+			// This catches pages that embed the requested URL (changing size
+			// slightly) while keeping word/line counts stable.
+			lengthOK := abs64(result.ContentLength-b.contentLength) <= int64(sf.threshold)
+			wordThreshold := max(5, b.wordCount/20) // 5%, min 5
+			wordOK := absInt(result.WordCount-b.wordCount) <= wordThreshold
+			lineThreshold := max(2, b.lineCount/10) // 10%, min 2
+			lineOK := absInt(result.LineCount-b.lineCount) <= lineThreshold
+
+			matches := 0
+			if lengthOK {
+				matches++
 			}
-			// Secondary: word count within 5%, minimum 5 words tolerance.
-			wordThreshold := max(5, b.wordCount/20)
-			wordDelta := absInt(result.WordCount - b.wordCount)
-			return wordDelta <= wordThreshold
+			if wordOK {
+				matches++
+			}
+			if lineOK {
+				matches++
+			}
+			return matches >= 2
 		}
 
 		return false

@@ -178,6 +178,78 @@ func TestExpandItems(t *testing.T) {
 	}
 }
 
+func TestNormalizeDirKey(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"Home", "home"},
+		{"Home/", "home"},
+		{"Home//", "home"},
+		{"/Home/", "/home"},
+		{"API/v1", "api/v1"},
+		{"css", "css"},
+	}
+	for _, tt := range tests {
+		got := normalizeDirKey(tt.input)
+		if got != tt.want {
+			t.Errorf("normalizeDirKey(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestDeduplicateDirs(t *testing.T) {
+	dirs := []string{"Home", "home/", "HOME", "Admin", "admin/", "Unique"}
+	got := deduplicateDirs(dirs)
+
+	if len(got) != 3 {
+		t.Fatalf("deduplicateDirs returned %d dirs, want 3: %v", len(got), got)
+	}
+	// First occurrence wins, trailing slash stripped.
+	if got[0] != "Home" {
+		t.Errorf("[0] = %q, want %q", got[0], "Home")
+	}
+	if got[1] != "Admin" {
+		t.Errorf("[1] = %q, want %q", got[1], "Admin")
+	}
+	if got[2] != "Unique" {
+		t.Errorf("[2] = %q, want %q", got[2], "Unique")
+	}
+}
+
+func TestIsStaticAssetDir(t *testing.T) {
+	tests := []struct {
+		dir  string
+		want bool
+	}{
+		{"css", true},
+		{"CSS", true},
+		{"images", true},
+		{"img", true},
+		{"fonts", true},
+		{"assets", true},
+		{"media", true},
+		{".hg", true},
+		{"api/v1/css", true},     // last segment is "css"
+		{"admin/fonts/", true},   // trailing slash stripped
+		{"js", false},            // removed from skip list
+		{"static", false},        // removed from skip list
+		{"vendor", false},        // removed from skip list
+		{"node_modules", false},  // removed from skip list
+		{".git", false},          // removed from skip list
+		{"admin", false},
+		{"Home", false},
+		{"login", false},
+		{"api", false},
+		{"api/v1/admin", false},
+	}
+	for _, tt := range tests {
+		got := isStaticAssetDir(tt.dir)
+		if got != tt.want {
+			t.Errorf("isStaticAssetDir(%q) = %v, want %v", tt.dir, got, tt.want)
+		}
+	}
+}
+
 func TestResolveMethods(t *testing.T) {
 	tests := []struct {
 		name    string
