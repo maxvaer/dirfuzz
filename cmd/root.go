@@ -36,7 +36,7 @@ var helpGroups = []flagGroup{
 	{"FILTERS", []string{"exclude-status", "exclude-size", "exclude-body", "smart-filter", "smart-filter-threshold", "smart-filter-per-dir", "duplicate-threshold"}},
 	{"RATE-LIMIT", []string{"threads", "timeout", "delay", "adaptive-throttle", "max-eta"}},
 	{"HTTP", []string{"header", "user-agent", "proxy", "follow-redirects", "methods"}},
-	{"OUTPUT", []string{"output", "format", "silent", "no-color", "sort", "tree", "on-result"}},
+	{"OUTPUT", []string{"output", "format", "full-url", "silent", "no-color", "sort", "tree", "on-result"}},
 	{"CONFIGURATION", []string{"resume-file"}},
 	{"UPDATE", []string{"update"}},
 }
@@ -165,6 +165,7 @@ func init() {
 	// Output
 	f.StringVarP(&opts.OutputFile, "output", "o", "", "Output file path")
 	f.StringVar(&opts.OutputFormat, "format", "text", "Output format: text, json, csv")
+	f.BoolVar(&opts.FullURL, "full-url", false, "Show full URL instead of path in output")
 	f.BoolVarP(&opts.Silent, "silent", "s", false, "Minimal output")
 	f.BoolVar(&opts.NoColor, "no-color", false, "Disable colored output")
 

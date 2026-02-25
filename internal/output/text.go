@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/maxvaer/dirfuzz/internal/scanner"
@@ -23,11 +24,13 @@ type TextWriter struct {
 	w       io.Writer
 	noColor bool
 	quiet   bool
+	fullURL bool
 }
 
 // NewTextWriter creates a text output writer. If outputFile is empty, stdout
-// is used. noColor disables ANSI escape codes.
-func NewTextWriter(outputFile string, noColor, quiet bool) (*TextWriter, error) {
+// is used. noColor disables ANSI escape codes. fullURL shows the complete URL
+// instead of just the path component (default shows /admin instead of https://example.com/admin).
+func NewTextWriter(outputFile string, noColor, quiet, fullURL bool) (*TextWriter, error) {
 	var w io.Writer = os.Stdout
 	if outputFile != "" {
 		f, err := os.Create(outputFile)
@@ -36,7 +39,7 @@ func NewTextWriter(outputFile string, noColor, quiet bool) (*TextWriter, error) 
 		}
 		w = f
 	}
-	return &TextWriter{w: w, noColor: noColor, quiet: quiet}, nil
+	return &TextWriter{w: w, noColor: noColor, quiet: quiet, fullURL: fullURL}, nil
 }
 
 func (t *TextWriter) WriteHeader() error {
@@ -49,7 +52,11 @@ func (t *TextWriter) WriteHeader() error {
 		dim = ""
 		reset = ""
 	}
-	_, err := fmt.Fprintf(t.w, "%sCode      Size  URL%s\n", dim, reset)
+	label := "Path"
+	if t.fullURL {
+		label = "URL"
+	}
+	_, err := fmt.Fprintf(t.w, "%sCode      Size  %s%s\n", dim, label, reset)
 	return err
 }
 
@@ -74,11 +81,16 @@ func (t *TextWriter) WriteResult(result *scanner.ScanResult) error {
 		prefix += fmt.Sprintf("[%s] ", result.Host)
 	}
 
+	location := "/" + strings.TrimLeft(result.Path, "/")
+	if t.fullURL {
+		location = result.URL
+	}
+
 	_, err := fmt.Fprintf(t.w, "%s%3d%s  %8d  %s%s%s\n",
 		color, result.StatusCode, reset,
 		result.ContentLength,
 		prefix,
-		result.URL,
+		location,
 		redirectInfo,
 	)
 	return err

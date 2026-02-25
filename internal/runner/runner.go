@@ -709,7 +709,7 @@ func createWriter(opts *config.Options) (output.Writer, error) {
 	case "csv":
 		w, err = output.NewCSVWriter(opts.OutputFile)
 	default:
-		w, err = output.NewTextWriter(opts.OutputFile, opts.NoColor, opts.Silent)
+		w, err = output.NewTextWriter(opts.OutputFile, opts.NoColor, opts.Silent, opts.FullURL)
 	}
 	if err != nil {
 		return nil, err

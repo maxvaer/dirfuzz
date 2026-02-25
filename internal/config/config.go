@@ -37,6 +37,7 @@ type Options struct {
 	OutputFormat string // "text", "json", "csv"
 	Silent       bool
 	NoColor      bool
+	FullURL      bool // show full URL instead of path only
 
 	// Recursion
 	Recursive bool
