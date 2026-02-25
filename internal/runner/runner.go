@@ -31,7 +31,7 @@ func Run(ctx context.Context, opts *config.Options) error {
 	}
 
 	for idx, target := range targets {
-		if len(targets) > 1 && !opts.Quiet {
+		if len(targets) > 1 && !opts.Silent {
 			fmt.Fprintf(os.Stderr, "\n[*] Target %d/%d: %s\n", idx+1, len(targets), target)
 		}
 		opts.URL = target
@@ -116,7 +116,7 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 			resumeState = existing
 			before := len(paths)
 			paths = resumeState.FilterRemaining(paths)
-			if !opts.Quiet {
+			if !opts.Silent {
 				fmt.Fprintf(os.Stderr, "[+] Resuming: skipping %d already completed paths\n", before-len(paths))
 			}
 		} else {
@@ -136,14 +136,14 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 	}
 
 	if len(paths) == 0 {
-		if !opts.Quiet {
+		if !opts.Silent {
 			fmt.Fprintf(os.Stderr, "[+] All paths already completed\n")
 		}
 		return nil
 	}
 
 	// 4. Print banner (before any other output).
-	if !opts.Quiet {
+	if !opts.Silent {
 		printBanner(opts, len(paths))
 	}
 
@@ -159,7 +159,7 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 
 	// 6. Smart filter calibration.
 	if opts.SmartFilter {
-		if !opts.Quiet {
+		if !opts.Silent {
 			fmt.Fprintf(os.Stderr, "[*] Calibrating smart filter against %s ...\n", opts.URL)
 		}
 		var sf *filter.SmartFilter
@@ -173,7 +173,7 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 			fmt.Fprintf(os.Stderr, "[!] Smart filter disabled: %v\n", sfErr)
 		} else {
 			chain.Add(sf)
-			if !opts.Quiet {
+			if !opts.Silent {
 				fmt.Fprintf(os.Stderr, "[+] Smart filter ready\n")
 			}
 		}
@@ -205,11 +205,11 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 	}
 
 	// 8. Create throttler and hook runner.
-	throttler := scanner.NewThrottler(opts.Delay, opts.AdaptiveThrottle, opts.Quiet)
+	throttler := scanner.NewThrottler(opts.Delay, opts.AdaptiveThrottle, opts.Silent)
 
 	var hookRunner *hook.Runner
 	if opts.OnResultCmd != "" {
-		hookRunner = hook.NewRunner(opts.OnResultCmd, opts.Quiet)
+		hookRunner = hook.NewRunner(opts.OnResultCmd, opts.Silent)
 	}
 
 	workerCfg := scanner.WorkerConfig{
@@ -219,7 +219,7 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 	}
 
 	// 8b. Set up interactive pause/resume.
-	pauser, cleanupTerminal := startStdinToggle(opts.Quiet)
+	pauser, cleanupTerminal := startStdinToggle(opts.Silent)
 	defer cleanupTerminal()
 	if pauser != nil {
 		workerCfg.Pauser = pauser
@@ -245,7 +245,7 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 		items = expandItems(paths, methods)
 	}
 
-	progress := output.NewProgress(len(items), opts.Quiet)
+	progress := output.NewProgress(len(items), opts.Silent)
 	if pauser != nil {
 		progress.SetPauser(pauser)
 	}
@@ -282,7 +282,7 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 		if opts.MaxETA > 0 && !etaSkipped {
 			if completed := progress.Completed(); completed >= etaCheckAfter {
 				if eta := progress.ETA(); eta > opts.MaxETA {
-					if !opts.Quiet {
+					if !opts.Silent {
 						progress.ClearLine()
 						fmt.Fprintf(os.Stderr, "[!] Skipping %s: ETA %s exceeds --max-eta %s\n",
 							opts.URL, eta.Round(time.Second), opts.MaxETA)
@@ -326,8 +326,8 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 					scannedSet[p] = struct{}{}
 				}
 			}
-			// Infer directories from crawled paths for recursive scanning.
-			if opts.Recursive && !opts.VHost {
+			// Infer directories from crawled paths for recursive scanning and tree output.
+			if (opts.Recursive || opts.Tree) && !opts.VHost {
 				for _, p := range newPaths {
 					for _, dir := range extractParentDirs(p, opts.MaxDepth) {
 						key := normalizeDirKey(dir)
@@ -355,13 +355,13 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 			hookRunner.Run(&result)
 		}
 
-		// Collect directories for recursive scanning.
-		if opts.Recursive && !opts.VHost && looksLikeDirectory(result) {
+		// Collect directories for recursive scanning and tree output.
+		if (opts.Recursive || opts.Tree) && !opts.VHost && looksLikeDirectory(result) {
 			dir := strings.TrimRight(result.Path, "/")
 			key := normalizeDirKey(dir)
 			if _, already := seenDirs[key]; !already {
 				if isStaticAssetDir(dir) {
-					if !opts.Quiet {
+					if !opts.Silent {
 						progress.ClearLine()
 						fmt.Fprintf(os.Stderr, "[*] Skipping /%s/ (static asset directory)\n", dir)
 						progress.Redraw()
@@ -418,7 +418,7 @@ func runSingleTarget(ctx context.Context, opts *config.Options) error {
 	}
 
 	// 13. Print directory tree if requested.
-	if opts.Tree && !opts.Quiet {
+	if opts.Tree && !opts.Silent {
 		allDirs := append(discoveredDirs, crawlDirs...)
 		output.PrintTree(os.Stderr, allDirs)
 	}
@@ -493,7 +493,7 @@ func runRecursive(
 					LineCount:     probeResp.LineCount,
 				}
 				if parentSF.ShouldFilter(probeResult) {
-					if !opts.Quiet {
+					if !opts.Silent {
 						fmt.Fprintf(os.Stderr, "\n[*] Skipping /%s/ (directory page matches soft-404 baseline)\n",
 							strings.TrimRight(dir, "/"))
 					}
@@ -508,7 +508,7 @@ func runRecursive(
 			newPaths[i] = strings.TrimRight(dir, "/") + "/" + strings.TrimLeft(p, "/")
 		}
 
-		if !opts.Quiet {
+		if !opts.Silent {
 			fmt.Fprintf(os.Stderr, "\n[*] Recursing into /%s/ (depth %d/%d, %d paths)\n",
 				strings.TrimRight(dir, "/"), depth, opts.MaxDepth, len(newPaths))
 		}
@@ -527,7 +527,7 @@ func runRecursive(
 			sf, err := filter.NewSmartFilter(ctx, req, dir, opts.SmartFilterThreshold)
 			if err == nil {
 				dirChain.Add(sf)
-				if !opts.Quiet {
+				if !opts.Silent {
 					fmt.Fprintf(os.Stderr, "[+] Smart filter recalibrated for /%s\n", dir)
 				}
 			}
@@ -546,7 +546,7 @@ func runRecursive(
 		newItems := expandItems(newPaths, methods)
 
 		// Create a fresh progress bar for this directory.
-		progress := output.NewProgress(len(newItems), opts.Quiet)
+		progress := output.NewProgress(len(newItems), opts.Silent)
 		if pauser != nil {
 			progress.SetPauser(pauser)
 		}
@@ -709,7 +709,7 @@ func createWriter(opts *config.Options) (output.Writer, error) {
 	case "csv":
 		w, err = output.NewCSVWriter(opts.OutputFile)
 	default:
-		w, err = output.NewTextWriter(opts.OutputFile, opts.NoColor, opts.Quiet)
+		w, err = output.NewTextWriter(opts.OutputFile, opts.NoColor, opts.Silent)
 	}
 	if err != nil {
 		return nil, err
@@ -765,13 +765,13 @@ func runCrawlPasses(
 	items := expandItems(newPaths, methods)
 	stats.TotalRequests += len(items)
 
-	if !opts.Quiet {
+	if !opts.Silent {
 		fmt.Fprintf(os.Stderr, "\n[*] Crawl pass %d/%d: %d new paths discovered\n",
 			depth, opts.CrawlDepth, len(newPaths))
 	}
 
 	// Create a fresh progress bar for this crawl pass.
-	progress := output.NewProgress(len(items), opts.Quiet)
+	progress := output.NewProgress(len(items), opts.Silent)
 	if pauser != nil {
 		progress.SetPauser(pauser)
 	}
@@ -821,8 +821,8 @@ func runCrawlPasses(
 					scannedSet[p] = struct{}{}
 				}
 			}
-			// Infer directories from crawled paths for recursive scanning.
-			if opts.Recursive && !opts.VHost {
+			// Infer directories from crawled paths for recursive scanning and tree output.
+			if (opts.Recursive || opts.Tree) && !opts.VHost {
 				for _, p := range discovered {
 					for _, dir := range extractParentDirs(p, opts.MaxDepth) {
 						if _, already := scannedSet[dir+"/"]; !already {

@@ -30,7 +30,7 @@ func testOpts(t *testing.T, serverURL, wordlistPath string) *config.Options {
 		WordlistPath: wordlistPath,
 		Threads:      2,
 		Timeout:      5 * time.Second,
-		Quiet:        true,
+		Silent:        true,
 		NoColor:      true,
 		OutputFile:   filepath.Join(t.TempDir(), "output.txt"),
 		OutputFormat: "text",

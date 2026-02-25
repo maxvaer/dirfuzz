@@ -35,7 +35,7 @@ type Options struct {
 	// Output
 	OutputFile   string
 	OutputFormat string // "text", "json", "csv"
-	Quiet        bool
+	Silent       bool
 	NoColor      bool
 
 	// Recursion

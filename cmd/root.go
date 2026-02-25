@@ -36,7 +36,7 @@ var helpGroups = []flagGroup{
 	{"FILTERS", []string{"exclude-status", "exclude-size", "exclude-body", "smart-filter", "smart-filter-threshold", "smart-filter-per-dir", "duplicate-threshold"}},
 	{"RATE-LIMIT", []string{"threads", "timeout", "delay", "adaptive-throttle", "max-eta"}},
 	{"HTTP", []string{"header", "user-agent", "proxy", "follow-redirects", "methods"}},
-	{"OUTPUT", []string{"output", "format", "quiet", "no-color", "sort", "tree", "on-result"}},
+	{"OUTPUT", []string{"output", "format", "silent", "no-color", "sort", "tree", "on-result"}},
 	{"CONFIGURATION", []string{"resume-file"}},
 	{"UPDATE", []string{"update"}},
 }
@@ -94,7 +94,7 @@ filtering of custom 404 pages (soft-404s) that return HTTP 200.`,
 					opts.UserAgent = ua
 				}
 			}
-			if !opts.Quiet {
+			if !opts.Silent {
 				fmt.Fprintf(os.Stderr, "[+] Loaded request from %s -> %s\n", opts.RequestFile, opts.URL)
 			}
 		}
@@ -150,7 +150,7 @@ func init() {
 	// Smart filter
 	f.BoolVar(&opts.SmartFilter, "smart-filter", true, "Enable smart 404 detection")
 	f.IntVar(&opts.SmartFilterThreshold, "smart-filter-threshold", 50, "Size tolerance in bytes for smart filter")
-	f.BoolVar(&opts.SmartFilterPerDir, "smart-filter-per-dir", false, "Re-calibrate smart filter per subdirectory")
+	f.BoolVar(&opts.SmartFilterPerDir, "smart-filter-per-dir", true, "Re-calibrate smart filter per subdirectory")
 	f.IntVar(&opts.DuplicateThreshold, "duplicate-threshold", 2, "Duplicates allowed before filtering same responses (0 to disable)")
 
 	// Filtering
@@ -165,7 +165,7 @@ func init() {
 	// Output
 	f.StringVarP(&opts.OutputFile, "output", "o", "", "Output file path")
 	f.StringVar(&opts.OutputFormat, "format", "text", "Output format: text, json, csv")
-	f.BoolVarP(&opts.Quiet, "quiet", "q", false, "Minimal output")
+	f.BoolVarP(&opts.Silent, "silent", "s", false, "Minimal output")
 	f.BoolVar(&opts.NoColor, "no-color", false, "Disable colored output")
 
 	// Recursion
